@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:latest
+    container_name: postgressql
+    environment:
+      POSTGRES_DB: mydatabase
+      POSTGRES_USER: birdlax
+      POSTGRES_PASSWORD: passwordbirdlax
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      # แก้ไขให้ user ตรงกัน
+      test: ["CMD-SHELL", "pg_isready -U birdlax -d mydatabase"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
