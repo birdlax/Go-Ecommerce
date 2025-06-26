@@ -6,17 +6,25 @@ import (
 	"backend/products/repository"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/google/uuid"
 	"log"
+	"math"
 	"mime/multipart"
 	"path/filepath"
+
+	"github.com/google/uuid"
 )
 
-// ProductService Interface (ที่เราเคยออกแบบไว้)
+var ErrProductNotFound = errors.New("product not found")
+
 type ProductService interface {
 	CreateProductWithImages(ctx context.Context, req CreateProductRequest) (*domain.Product, error)
 	CreateNewCategory(req domain.Category) error
+	FindAllProducts(params domain.QueryParams) (*domain.PaginatedProductsDTO, error)
+	FindProductByID(id uint) (*domain.Product, error)
+	DeleteProduct(id uint) error
+	UpdateProduct(id uint, updates map[string]interface{}) (*domain.Product, error)
 }
 
 type CreateProductRequest struct {
@@ -108,4 +116,107 @@ func (s *productService) CreateNewCategory(req domain.Category) error {
 	}
 
 	return nil
+}
+
+// FindProductByID คือ Logic การดึงข้อมูลชิ้นเดียว และ "แปล" Error
+func (s *productService) FindProductByID(id uint) (*domain.Product, error) {
+	product, err := s.productRepo.FindProductByID(id)
+	if err != nil {
+		// "แปล" error จาก Repository เป็น error ของ Service
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrProductNotFound
+		}
+		return nil, err
+	}
+
+	// เพิ่ม URL เต็มให้กับทุกรูปภาพก่อนส่งกลับไป
+	imageBaseURL := "https://<your-account-name>.blob.core.windows.net/<your-container-name>/"
+	for i := range product.Images {
+		product.Images[i].URL = imageBaseURL + product.Images[i].Path
+	}
+
+	return product, nil
+}
+
+func (s *productService) FindAllProducts(params domain.QueryParams) (*domain.PaginatedProductsDTO, error) {
+	// 1. ดึงจำนวนสินค้ารวมทั้งหมดจาก Repository
+	totalItems, err := s.productRepo.Count()
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. ดึงข้อมูลสินค้าในหน้าที่ต้องการ
+	products, err := s.productRepo.FindAll(params)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. แปลง Domain Model เป็น DTO (เหมือนเดิม)
+	imageBaseURL := "https://<your-account-name>.blob.core.windows.net/<your-container-name>/"
+	dtos := make([]domain.ProductListDTO, 0, len(products))
+	for _, p := range products {
+		// สร้าง DTO พร้อมคัดลอกข้อมูลทั้งหมดจาก p มาใส่ทันที
+		dto := domain.ProductListDTO{
+			ID:           p.ID,
+			Name:         p.Name,
+			Price:        p.Price,
+			SKU:          p.SKU,
+			CategoryName: p.Category.Name, // สามารถดึงได้โดยตรงเพราะ Repository ทำ Preload("Category") ไว้แล้ว
+		}
+
+		// ค้นหารูปปก (ยังคงเหมือนเดิม)
+		if len(p.Images) > 0 {
+			// สมมติเอารูปแรกเป็นรูปปก
+			dto.PrimaryImageURL = imageBaseURL + p.Images[0].Path
+		}
+
+		dtos = append(dtos, dto)
+	}
+
+	// 4. คำนวณค่า Pagination
+	totalPages := int(math.Ceil(float64(totalItems) / float64(params.Limit)))
+
+	// 5. สร้าง Response DTO สุดท้าย
+	paginatedResponse := &domain.PaginatedProductsDTO{
+		Data:        dtos,
+		TotalItems:  totalItems,
+		TotalPages:  totalPages,
+		CurrentPage: params.Page,
+		Limit:       params.Limit,
+	}
+
+	return paginatedResponse, nil
+}
+
+func (s *productService) DeleteProduct(id uint) error {
+	err := s.productRepo.Delete(id)
+	if err != nil {
+		// แปล error จาก repository เป็น error ของ service
+		if errors.Is(err, repository.ErrNotFound) {
+			return ErrProductNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *productService) UpdateProduct(id uint, updates map[string]interface{}) (*domain.Product, error) {
+	// 1. ตรวจสอบว่ามีสินค้านี้อยู่จริงหรือไม่ก่อนทำการอัปเดต
+	// โดยการเรียก FindProductByID ซึ่งจะคืนค่า ErrProductNotFound ถ้าไม่มี
+	_, err := s.productRepo.FindProductByID(id)
+	if err != nil {
+		// "แปล" error จาก repository เป็น error ของ service
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrProductNotFound
+		}
+		return nil, err
+	}
+
+	// 2. ถ้ามีอยู่จริง ก็สั่งให้อัปเดตข้อมูล
+	if err := s.productRepo.Update(id, updates); err != nil {
+		return nil, err
+	}
+
+	// 3. ดึงข้อมูลตัวเต็มที่อัปเดตแล้วกลับไปแสดง
+	return s.productRepo.FindProductByID(id)
 }

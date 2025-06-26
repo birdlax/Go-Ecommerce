@@ -4,9 +4,9 @@ package handler
 import (
 	"backend/products/domain"
 	"backend/products/service"
-	"log"
-
 	"github.com/gofiber/fiber/v2"
+	"log"
+	"strconv"
 )
 
 type ProductHandler struct {
@@ -48,6 +48,7 @@ func (h *ProductHandler) HandleCreateProduct(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusCreated).JSON(createdProduct)
 }
+
 func (h *ProductHandler) HandleCreateCategory(c *fiber.Ctx) error {
 	var req domain.Category
 	if err := c.BodyParser(&req); err != nil {
@@ -66,4 +67,102 @@ func (h *ProductHandler) HandleCreateCategory(c *fiber.Ctx) error {
 		"message":  "Category created successfully",
 		"category": req,
 	})
+}
+
+func (h *ProductHandler) HandleGetAllProducts(c *fiber.Ctx) error {
+	// 1. สร้าง QueryParams พร้อมตั้งค่า Default
+	params := domain.QueryParams{
+		Page:   c.QueryInt("page", 1),
+		Limit:  c.QueryInt("limit", 20),
+		SortBy: c.Query("sort_by", "created_at"), // ค่าเริ่มต้นเรียงตาม "ล่าสุด"
+		Order:  c.Query("order", "desc"),
+	}
+
+	// 2. Validate ค่าที่รับเข้ามา
+	if params.Page <= 0 {
+		params.Page = 1
+	}
+	if params.Limit <= 0 {
+		params.Limit = 20
+	}
+	// แปลงค่า "latest" เป็น "created_at"
+	if params.SortBy == "latest" {
+		params.SortBy = "created_at"
+	}
+	// ตรวจสอบค่าที่อนุญาตสำหรับ SortBy เพื่อป้องกัน SQL Injection
+	allowedSorts := map[string]bool{"price": true, "name": true, "created_at": true}
+	if !allowedSorts[params.SortBy] {
+		params.SortBy = "created_at" // ถ้าไม่ถูกต้องให้กลับไปใช้ค่า Default
+	}
+
+	// 3. เรียกใช้ Service
+	paginatedResult, err := h.productSvc.FindAllProducts(params)
+	if err != nil {
+		log.Printf("Error finding all products: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Could not retrieve products",
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(paginatedResult)
+}
+
+func (h *ProductHandler) HandleGetProductByID(c *fiber.Ctx) error {
+	idStr := c.Params("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid product ID format") // คืนเป็น Fiber Error
+	}
+
+	product, err := h.productSvc.FindProductByID(uint(id))
+	if err != nil {
+		return err // <-- คืน error ออกไปตรงๆ เลย! ไม่ต้องเขียน if/else แล้ว
+	}
+
+	return c.Status(fiber.StatusOK).JSON(product)
+}
+
+func (h *ProductHandler) HandleDeleteProduct(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		// ใช้ Fiber Error Handler กลางที่เราสร้างไว้
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid product ID format")
+	}
+
+	err = h.productSvc.DeleteProduct(uint(id))
+	if err != nil {
+		// คืน error ให้ Middleware จัดการต่อ
+		// Middleware จะเช็คว่าเป็น ErrProductNotFound หรือไม่ แล้วส่ง 404 กลับไป
+		return err
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"message": "Delete successfully",
+	})
+}
+
+func (h *ProductHandler) HandleUpdateProduct(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid product ID format")
+	}
+
+	var updates map[string]interface{}
+	if err := c.BodyParser(&updates); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Cannot parse JSON")
+	}
+
+	// ลบฟิลด์ที่ไม่ควรให้ user อัปเดตได้เองออกจาก map
+	delete(updates, "id")
+
+	// เรียก service ให้อัปเดต
+	updatedProduct, err := h.productSvc.UpdateProduct(uint(id), updates)
+	if err != nil {
+		// คืน error ที่ได้รับจาก service ไปตรงๆ
+		// Middleware Error Handler ของเราจะดักจับและแปลงเป็น HTTP Response ที่เหมาะสม
+		// เช่น ถ้า err คือ service.ErrProductNotFound มันจะแปลงเป็น 404 Not Found
+		return err
+	}
+
+	return c.Status(fiber.StatusOK).JSON(updatedProduct)
 }

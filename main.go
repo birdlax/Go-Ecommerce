@@ -2,9 +2,9 @@ package main
 
 import (
 	"backend/config"
+	"backend/middleware"
 	"backend/products/domain"
 	"backend/products/routes"
-
 	"github.com/gofiber/fiber/v2"
 	"log"
 )
@@ -17,7 +17,9 @@ func main() {
 	}
 	db.AutoMigrate(&domain.Category{}, &domain.Product{}, &domain.ProductImage{})
 
-	app := fiber.New()
+	app := fiber.New(fiber.Config{
+		ErrorHandler: middleware.ErrorHandler, // <-- บอกให้ Fiber ใช้ Error Handler ของเรา
+	})
 
 	// Register the product module with the app and database connection
 	routes.RegisterModule(app, db, cfg.AzureConnectionString)

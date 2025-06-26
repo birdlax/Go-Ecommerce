@@ -15,11 +15,27 @@ type Product struct {
 	Category    Category       `gorm:"foreignKey:CategoryID" json:"category"`
 }
 
-// type CreateProductRequest struct {
-// 	Name        string
-// 	Description string
-// 	Price       float64
-// 	Quantity    int
-// 	SKU         string
-// 	CategoryID  uint
-// }
+type ProductListDTO struct {
+	ID              uint    `json:"id"`
+	Name            string  `json:"name"`
+	Price           float64 `json:"price"`
+	SKU             string  `json:"sku"`
+	CategoryName    string  `json:"category_name"`
+	PrimaryImageURL string  `json:"primary_image_url"`
+}
+
+type QueryParams struct {
+	Page   int
+	Limit  int
+	SortBy string
+	Order  string
+}
+
+// PaginatedProductsDTO คือ DTO สำหรับ Response ที่มีข้อมูลการแบ่งหน้า
+type PaginatedProductsDTO struct {
+	Data        []ProductListDTO `json:"data"` // ข้อมูลสินค้าในหน้านั้นๆ
+	TotalItems  int64            `json:"total_items"`
+	TotalPages  int              `json:"total_pages"`
+	CurrentPage int              `json:"current_page"`
+	Limit       int              `json:"limit"`
+}

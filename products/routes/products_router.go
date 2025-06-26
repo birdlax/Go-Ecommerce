@@ -26,6 +26,10 @@ func RegisterModule(app *fiber.App, db *gorm.DB, azureConnectionString string) {
 	// Route สำหรับสร้างสินค้า
 	productsAPI := api.Group("/products")
 	productsAPI.Post("/", productHdl.HandleCreateProduct)
+	productsAPI.Get("/", productHdl.HandleGetAllProducts)
+	productsAPI.Get("/:id", productHdl.HandleGetProductByID)
+	productsAPI.Delete("/:id", productHdl.HandleDeleteProduct)
+	productsAPI.Patch("/:id", productHdl.HandleUpdateProduct)
 
 	log.Println("✅ Product module registered successfully.")
 }
