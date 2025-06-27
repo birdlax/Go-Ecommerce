@@ -17,6 +17,11 @@ type ProductRepository interface {
 	Count() (int64, error)
 	Delete(id uint) error
 	Update(id uint, updates map[string]interface{}) error
+	// Method สำหรับจัดการ ProductImage
+	FindImageByID(id uint) (*domain.ProductImage, error)
+	UpdateImagePath(id uint, newPath string) error
+	FindImagesByIDs(ids []uint) ([]domain.ProductImage, error)
+	DeleteImagesByIDs(ids []uint) error
 }
 
 // ... UploadRepository Interface ...
@@ -123,4 +128,40 @@ func (r *productRepository) Update(id uint, updates map[string]interface{}) erro
 	}
 
 	return nil
+}
+
+func (r *productRepository) FindImageByID(id uint) (*domain.ProductImage, error) {
+	var image domain.ProductImage
+	err := r.db.First(&image, id).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &image, nil
+}
+
+func (r *productRepository) UpdateImagePath(id uint, newPath string) error {
+	// อัปเดตเฉพาะคอลัมน์ 'path' ของ record ที่มี id ตรงกัน
+	result := r.db.Model(&domain.ProductImage{}).Where("id = ?", id).Update("path", newPath)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *productRepository) FindImagesByIDs(ids []uint) ([]domain.ProductImage, error) {
+	var images []domain.ProductImage
+	err := r.db.Where("id IN ?", ids).Find(&images).Error
+	return images, err
+}
+
+// DeleteImagesByIDs ลบรูปภาพหลายใบจาก ID ที่ระบุ (Soft Delete)
+func (r *productRepository) DeleteImagesByIDs(ids []uint) error {
+	// ใช้ gorm.Model จะทำการ Soft Delete โดยอัตโนมัติ
+	return r.db.Delete(&domain.ProductImage{}, ids).Error
 }

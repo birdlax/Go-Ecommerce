@@ -15,6 +15,7 @@ import (
 // โดยไม่จำเป็นต้องรู้ว่าข้างหลังทำงานกับ Azure, S3, หรือ Google Cloud Storage
 type UploadRepository interface {
 	UploadFile(ctx context.Context, path string, file io.Reader, contentType string) (string, error)
+	DeleteFile(ctx context.Context, path string) error
 }
 
 // azureUploadRepository คือ struct ที่ทำงานกับ Azure จริงๆ (Adapter)
@@ -75,6 +76,13 @@ func (r *azureUploadRepository) UploadFile(ctx context.Context, path string, fil
 	)
 
 	return fileURL, nil
+}
+
+func (r *azureUploadRepository) DeleteFile(ctx context.Context, path string) error {
+	// วิธีที่ถูกต้องคือเรียก DeleteBlob จาก Service Client โดยตรง
+	// โดยระบุชื่อ Container และชื่อ Blob (path) ที่ต้องการลบ
+	_, err := r.client.DeleteBlob(ctx, r.containerName, path, nil)
+	return err
 }
 
 // getAccountName เป็น helper function ที่ใช้ภายใน package นี้เท่านั้น

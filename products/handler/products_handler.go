@@ -4,9 +4,11 @@ package handler
 import (
 	"backend/products/domain"
 	"backend/products/service"
-	"github.com/gofiber/fiber/v2"
 	"log"
 	"strconv"
+	"strings"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 type ProductHandler struct {
@@ -165,4 +167,72 @@ func (h *ProductHandler) HandleUpdateProduct(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).JSON(updatedProduct)
+}
+
+func (h *ProductHandler) HandleReplaceProductImage(c *fiber.Ctx) error {
+	productID, err := c.ParamsInt("productId")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid product ID format")
+	}
+	imageID, err := c.ParamsInt("imageId")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid image ID format")
+	}
+
+	fileHeader, err := c.FormFile("file") // รับไฟล์ใหม่จาก field ชื่อ 'file'
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Missing image file")
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "Cannot open file")
+	}
+	defer file.Close()
+
+	updatedImage, err := h.productSvc.ReplaceProductImage(c.Context(), uint(productID), uint(imageID), file, fileHeader)
+	if err != nil {
+		// Middleware จัดการ Error ต่อให้
+		return err
+	}
+
+	return c.Status(fiber.StatusOK).JSON(updatedImage)
+}
+
+func (h *ProductHandler) HandleUpdateImages(c *fiber.Ctx) error {
+	productID, err := c.ParamsInt("productId")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid product ID")
+	}
+
+	// รับไฟล์ที่จะเพิ่ม
+	form, err := c.MultipartForm()
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid form data")
+	}
+	filesToAdd := form.File["add_files"]
+
+	// รับ ID ของไฟล์ที่จะลบ
+	deleteIDsStr := c.FormValue("delete_image_ids")
+	var imageIDsToDelete []uint
+	if deleteIDsStr != "" {
+		ids := strings.Split(deleteIDsStr, ",")
+		for _, idStr := range ids {
+			id, err := strconv.Atoi(strings.TrimSpace(idStr))
+			if err == nil {
+				imageIDsToDelete = append(imageIDsToDelete, uint(id))
+			}
+		}
+	}
+
+	req := service.UpdateImagesRequest{
+		FilesToAdd:       filesToAdd,
+		ImageIDsToDelete: imageIDsToDelete,
+	}
+
+	if err := h.productSvc.UpdateProductImages(c.Context(), uint(productID), req); err != nil {
+		return err // ส่งต่อให้ Error Middleware จัดการ
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Product images updated successfully"})
 }

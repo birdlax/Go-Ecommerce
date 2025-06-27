@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"mime/multipart"
@@ -25,6 +26,8 @@ type ProductService interface {
 	FindProductByID(id uint) (*domain.Product, error)
 	DeleteProduct(id uint) error
 	UpdateProduct(id uint, updates map[string]interface{}) (*domain.Product, error)
+	ReplaceProductImage(ctx context.Context, productID, imageID uint, file io.Reader, fileHeader *multipart.FileHeader) (*domain.ProductImage, error)
+	UpdateProductImages(ctx context.Context, productID uint, req UpdateImagesRequest) error
 }
 
 type CreateProductRequest struct {
@@ -35,13 +38,25 @@ type CreateProductRequest struct {
 type productService struct {
 	productRepo repository.ProductRepository
 	uploadRepo  repository.UploadRepository
+	// และเก็บ Unit of Work สำหรับงาน Write ที่ต้องการ Transaction
+	uow repository.UnitOfWork
 }
 
-func NewProductService(productRepo repository.ProductRepository, uploadRepo repository.UploadRepository) ProductService {
+func NewProductService(
+	productRepo repository.ProductRepository,
+	uploadRepo repository.UploadRepository,
+	uow repository.UnitOfWork,
+) ProductService {
 	return &productService{
 		productRepo: productRepo,
 		uploadRepo:  uploadRepo,
+		uow:         uow,
 	}
+}
+
+type UpdateImagesRequest struct {
+	FilesToAdd       []*multipart.FileHeader
+	ImageIDsToDelete []uint
 }
 
 func (s *productService) CreateProductWithImages(ctx context.Context, req CreateProductRequest) (*domain.Product, error) {
@@ -130,7 +145,7 @@ func (s *productService) FindProductByID(id uint) (*domain.Product, error) {
 	}
 
 	// เพิ่ม URL เต็มให้กับทุกรูปภาพก่อนส่งกลับไป
-	imageBaseURL := "https://<your-account-name>.blob.core.windows.net/<your-container-name>/"
+	imageBaseURL := "https://goecommerce.blob.core.windows.net/uploads/"
 	for i := range product.Images {
 		product.Images[i].URL = imageBaseURL + product.Images[i].Path
 	}
@@ -152,7 +167,7 @@ func (s *productService) FindAllProducts(params domain.QueryParams) (*domain.Pag
 	}
 
 	// 3. แปลง Domain Model เป็น DTO (เหมือนเดิม)
-	imageBaseURL := "https://<your-account-name>.blob.core.windows.net/<your-container-name>/"
+	imageBaseURL := "https://goecommerce.blob.core.windows.net/uploads/"
 	dtos := make([]domain.ProductListDTO, 0, len(products))
 	for _, p := range products {
 		// สร้าง DTO พร้อมคัดลอกข้อมูลทั้งหมดจาก p มาใส่ทันที
@@ -219,4 +234,131 @@ func (s *productService) UpdateProduct(id uint, updates map[string]interface{}) 
 
 	// 3. ดึงข้อมูลตัวเต็มที่อัปเดตแล้วกลับไปแสดง
 	return s.productRepo.FindProductByID(id)
+}
+
+func (s *productService) ReplaceProductImage(ctx context.Context, productID, imageID uint, file io.Reader, fileHeader *multipart.FileHeader) (*domain.ProductImage, error) {
+	// 1. ค้นหาข้อมูลรูปภาพเดิม เพื่อตรวจสอบและเอา path เก่ามาใช้
+	oldImage, err := s.productRepo.FindImageByID(imageID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrProductNotFound // หรืออาจจะสร้าง ErrImageNotFound แยก
+		}
+		return nil, err
+	}
+
+	// ตรวจสอบว่ารูปนี้เป็นของ Product นี้จริงหรือไม่
+	if oldImage.ProductID != productID {
+		return nil, errors.New("image does not belong to the specified product")
+	}
+	oldPath := oldImage.Path
+
+	// 2. อัปโหลดไฟล์ใหม่ไปที่ Azure
+	ext := filepath.Ext(fileHeader.Filename)
+	newFileName := fmt.Sprintf("%s%s", uuid.New().String(), ext)
+	newPath := fmt.Sprintf("products/%d/%s", productID, newFileName)
+
+	_, err = s.uploadRepo.UploadFile(ctx, newPath, file, fileHeader.Header.Get("Content-Type"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload new file: %w", err)
+	}
+
+	// 3. อัปเดต Path ใหม่ลงใน Database
+	if err := s.productRepo.UpdateImagePath(imageID, newPath); err != nil {
+		// TODO: ถ้าขั้นตอนนี้ล้มเหลว ควรจะมี Logic ไปลบไฟล์ใหม่ที่เพิ่งอัปโหลดไปในข้อ 2 (Rollback)
+		return nil, fmt.Errorf("failed to update image path in db: %w", err)
+	}
+
+	// 4. ลบไฟล์เก่าออกจาก Azure Storage
+	if oldPath != "" {
+		if err := s.uploadRepo.DeleteFile(ctx, oldPath); err != nil {
+			// ถ้าลบไฟล์เก่าไม่สำเร็จ ควรทำอย่างไร? ส่วนใหญ่เราจะแค่ Log error ไว้
+			// เพราะข้อมูลใน DB ถูกต้องแล้ว การมีไฟล์ขยะค้างอยู่ไม่กระทบระบบหลัก
+			log.Printf("WARNING: Failed to delete old blob object '%s': %v", oldPath, err)
+		}
+	}
+
+	// 5. ดึงข้อมูลรูปภาพล่าสุดมาคืนค่า
+	updatedImage, err := s.productRepo.FindImageByID(imageID)
+	if err != nil {
+		return nil, ErrProductNotFound
+	}
+
+	// เพิ่ม Full URL ก่อนส่งกลับ
+	imageBaseURL := "https://goecommerce.blob.core.windows.net/uploads/"
+	updatedImage.URL = imageBaseURL + updatedImage.Path
+
+	return updatedImage, nil
+}
+
+func (s *productService) UpdateProductImages(ctx context.Context, productID uint, req UpdateImagesRequest) error {
+	// Logic การอัปโหลดไฟล์ไป Azure ยังคงทำนอก Transaction
+	// เพราะเราไม่อยากให้ DB transaction ค้างนานระหว่างรออัปโหลด
+	var newImagesData []domain.ProductImage
+	if len(req.FilesToAdd) > 0 {
+		for _, fileHeader := range req.FilesToAdd {
+			file, err := fileHeader.Open()
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+
+			ext := filepath.Ext(fileHeader.Filename)
+			newFileName := fmt.Sprintf("%s%s", uuid.New().String(), ext)
+			blobPath := fmt.Sprintf("products/%d/%s", productID, newFileName)
+
+			_, err = s.uploadRepo.UploadFile(ctx, blobPath, file, fileHeader.Header.Get("Content-Type"))
+			if err != nil {
+				return err
+			}
+
+			newImagesData = append(newImagesData, domain.ProductImage{
+				ProductID: productID,
+				Path:      blobPath,
+				IsPrimary: false,
+			})
+		}
+	}
+
+	var pathsToDelete []string
+
+	// --- เริ่มการทำงานกับ Database ผ่าน Unit of Work ---
+	err := s.uow.Execute(func(repos *repository.Repositories) error {
+		// Logic การลบและเพิ่มจะเกิดในนี้ โดยเรียกใช้ repo จาก UoW
+		// repos.Product ตอนนี้คือ instance ที่ทำงานบน transaction
+
+		if len(req.ImageIDsToDelete) > 0 {
+			imagesToDelete, err := repos.Product.FindImagesByIDs(req.ImageIDsToDelete)
+			if err != nil {
+				return err
+			}
+			for _, img := range imagesToDelete {
+				pathsToDelete = append(pathsToDelete, img.Path)
+			}
+			if err := repos.Product.DeleteImagesByIDs(req.ImageIDsToDelete); err != nil {
+				return err
+			}
+		}
+
+		if len(newImagesData) > 0 {
+			if err := repos.Product.CreateImages(newImagesData); err != nil {
+				return err
+			}
+		}
+
+		return nil // คืนค่า nil เพื่อ Commit Transaction
+	})
+
+	if err != nil {
+		// TODO: ควรมี Logic ลบไฟล์ที่เพิ่งอัปโหลดไป ถ้า DB Transaction ล้มเหลว
+		return err
+	}
+
+	// ลบไฟล์เก่าออกจาก Azure หลังจาก DB Transaction สำเร็จ
+	for _, path := range pathsToDelete {
+		if err := s.uploadRepo.DeleteFile(ctx, path); err != nil {
+			log.Printf("WARNING: Failed to delete old blob object '%s': %v", path, err)
+		}
+	}
+
+	return nil
 }
