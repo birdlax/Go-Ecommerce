@@ -2,7 +2,7 @@
 package handler
 
 import (
-	"backend/products/domain"
+	"backend/domain"
 	"backend/products/service"
 	"log"
 	"strconv"
@@ -167,36 +167,6 @@ func (h *ProductHandler) HandleUpdateProduct(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).JSON(updatedProduct)
-}
-
-func (h *ProductHandler) HandleReplaceProductImage(c *fiber.Ctx) error {
-	productID, err := c.ParamsInt("productId")
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "Invalid product ID format")
-	}
-	imageID, err := c.ParamsInt("imageId")
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "Invalid image ID format")
-	}
-
-	fileHeader, err := c.FormFile("file") // รับไฟล์ใหม่จาก field ชื่อ 'file'
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "Missing image file")
-	}
-
-	file, err := fileHeader.Open()
-	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "Cannot open file")
-	}
-	defer file.Close()
-
-	updatedImage, err := h.productSvc.ReplaceProductImage(c.Context(), uint(productID), uint(imageID), file, fileHeader)
-	if err != nil {
-		// Middleware จัดการ Error ต่อให้
-		return err
-	}
-
-	return c.Status(fiber.StatusOK).JSON(updatedImage)
 }
 
 func (h *ProductHandler) HandleUpdateImages(c *fiber.Ctx) error {

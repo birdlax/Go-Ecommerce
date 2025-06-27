@@ -1,7 +1,7 @@
 package repository
 
 import (
-	"backend/products/domain"
+	"backend/domain"
 	"errors"
 	"gorm.io/gorm"
 )
@@ -19,7 +19,6 @@ type ProductRepository interface {
 	Update(id uint, updates map[string]interface{}) error
 	// Method สำหรับจัดการ ProductImage
 	FindImageByID(id uint) (*domain.ProductImage, error)
-	UpdateImagePath(id uint, newPath string) error
 	FindImagesByIDs(ids []uint) ([]domain.ProductImage, error)
 	DeleteImagesByIDs(ids []uint) error
 }
@@ -140,18 +139,6 @@ func (r *productRepository) FindImageByID(id uint) (*domain.ProductImage, error)
 		return nil, err
 	}
 	return &image, nil
-}
-
-func (r *productRepository) UpdateImagePath(id uint, newPath string) error {
-	// อัปเดตเฉพาะคอลัมน์ 'path' ของ record ที่มี id ตรงกัน
-	result := r.db.Model(&domain.ProductImage{}).Where("id = ?", id).Update("path", newPath)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
 }
 
 func (r *productRepository) FindImagesByIDs(ids []uint) ([]domain.ProductImage, error) {

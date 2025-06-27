@@ -1,5 +1,5 @@
 // package products // แนะนำให้เปลี่ยนชื่อ package เป็น 'products' เพื่อให้ตรงกับ Domain
-package routes
+package products
 
 import (
 	"backend/products/handler"
@@ -42,7 +42,6 @@ func RegisterModule(app *fiber.App, db *gorm.DB, azureConnectionString string) {
 	productsAPI.Delete("/:id", productHdl.HandleDeleteProduct)
 
 	// Routes สำหรับจัดการรูปภาพ
-	productsAPI.Put("/:productId/images/:imageId", productHdl.HandleReplaceProductImage)
 	productsAPI.Patch("/:productId/images", productHdl.HandleUpdateImages)
 
 	log.Println("✅ Product module registered successfully.")
