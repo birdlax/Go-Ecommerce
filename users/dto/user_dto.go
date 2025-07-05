@@ -39,3 +39,14 @@ type PaginatedUsersResponse struct {
 	CurrentPage int            `json:"current_page"`
 	Limit       int            `json:"limit"`
 }
+
+// เพิ่ม DTO สำหรับรับข้อมูลตอน Login
+type LoginRequest struct {
+	Email    string `json:"email" validate:"required,email"`
+	Password string `json:"password" validate:"required"`
+}
+
+// DTO สำหรับส่ง Token กลับไป
+type LoginResponse struct {
+	AccessToken string `json:"access_token"`
+}

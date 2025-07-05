@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"backend/middleware"
 	"backend/users/dto"
 	"backend/users/service"
 	"errors"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
+	"time"
 )
 
 type UserHandler struct {
@@ -39,6 +41,7 @@ func (h *UserHandler) HandleRegister(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusCreated).JSON(userResponse)
 }
+
 func (h *UserHandler) HandleGetAllUsers(c *fiber.Ctx) error {
 	// 1. สร้าง QueryParams พร้อมตั้งค่า Default
 	params := dto.UserQueryParams{
@@ -71,4 +74,88 @@ func (h *UserHandler) HandleGetAllUsers(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).JSON(paginatedResult)
+}
+
+func (h *UserHandler) HandleLogin(c *fiber.Ctx) error {
+	var req dto.LoginRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+	}
+
+	// Validate ข้อมูลหลังจาก Parse แล้ว
+	validate := validator.New()
+	if err := validate.Struct(req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Validation failed: "+err.Error())
+	}
+
+	accessToken, refreshToken, err := h.userSvc.Login(req)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// --- ตั้งค่า Refresh Token เป็น HttpOnly Cookie ---
+	c.Cookie(&fiber.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		Expires:  time.Now().Add(time.Hour * 24 * 7),
+		HTTPOnly: true,
+		Secure:   true, // ใน Production ควรเป็น true เสมอ
+		SameSite: "Strict",
+	})
+
+	// ส่ง Access Token กลับไปใน JSON Body
+	return c.Status(fiber.StatusOK).JSON(dto.LoginResponse{AccessToken: accessToken})
+}
+
+// --- เพิ่ม 2 Handler นี้เข้าไป ---
+func (h *UserHandler) HandleRefreshToken(c *fiber.Ctx) error {
+	// ดึง Refresh Token จาก Cookie ที่เบราว์เซอร์ส่งมาให้
+	refreshToken := c.Cookies("refresh_token")
+	if refreshToken == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "refresh token not found"})
+	}
+
+	newAccessToken, err := h.userSvc.RefreshToken(refreshToken)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(dto.LoginResponse{AccessToken: newAccessToken})
+}
+
+func (h *UserHandler) HandleLogout(c *fiber.Ctx) error {
+	refreshToken := c.Cookies("refresh_token")
+	if err := h.userSvc.Logout(refreshToken); err != nil {
+		return err // ให้ Error Middleware จัดการ
+	}
+
+	// ลบ Cookie ที่ฝั่ง Client โดยการส่ง Cookie ชื่อเดิมที่หมดอายุไปแล้ว
+	c.Cookie(&fiber.Cookie{
+		Name:     "refresh_token",
+		Value:    "",
+		Expires:  time.Now().Add(-time.Hour), // ตั้งเวลาในอดีต
+		HTTPOnly: true,
+	})
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "logged out successfully"})
+}
+
+func (h *UserHandler) HandleGetMyProfile(c *fiber.Ctx) error {
+	// 1. ดึงข้อมูล Claims ที่ Middleware เก็บไว้ใน Locals context
+	// เราต้องทำ Type Assertion เพื่อแปลง interface{} กลับมาเป็น *middleware.JwtClaims
+	claims, ok := c.Locals("user").(*middleware.JwtClaims)
+	if !ok {
+		return fiber.NewError(fiber.StatusInternalServerError, "Cannot parse user claims")
+	}
+
+	// 2. ตอนนี้เรามี UserID ที่เชื่อถือได้จาก Token แล้ว
+	userID := claims.UserID
+
+	// 3. เรียกใช้ Service เพื่อดึงข้อมูล User
+	userResponse, err := h.userSvc.FindUserByID(userID)
+	if err != nil {
+		return err // ส่งให้ Error Middleware จัดการ
+	}
+
+	return c.Status(fiber.StatusOK).JSON(userResponse)
 }

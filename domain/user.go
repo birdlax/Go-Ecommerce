@@ -28,4 +28,6 @@ type User struct {
 	PasswordResetToken     *string    `json:"-"`
 	PasswordResetExpiresAt *time.Time `json:"-"`
 	Addresses              []Address  `json:"addresses" gorm:"foreignKey:UserID"`
+	RefreshToken           *string    `json:"-" gorm:"uniqueIndex"`
+	RefreshTokenExpiresAt  *time.Time `json:"-"`
 }

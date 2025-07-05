@@ -4,9 +4,15 @@ import (
 	"backend/domain"
 	"backend/users/dto"
 	"backend/users/repository"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"math"
+	"os"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -17,11 +23,16 @@ var ErrUserNotFound = errors.New("user not found")
 
 // UserService Interface
 type UserService interface {
-	Register(req dto.RegisterRequest) (*dto.UserResponse, error)
 	FindAllUsers(params dto.UserQueryParams) (*dto.PaginatedUsersDTO, error)
 	FindUserByID(id uint) (*dto.UserResponse, error)
 	UpdateUser(id uint, req map[string]interface{}) (*dto.UserResponse, error)
 	DeleteUser(id uint) error
+
+	// เพิ่ม Method สำหรับ Register,Login, Refresh Token และ Logout
+	Register(req dto.RegisterRequest) (*dto.UserResponse, error)
+	Login(req dto.LoginRequest) (accessToken string, refreshToken string, err error)
+	RefreshToken(tokenString string) (newAccessToken string, err error)
+	Logout(hashedToken string) error
 }
 
 type userService struct {
@@ -117,6 +128,7 @@ func (s *userService) FindAllUsers(params dto.UserQueryParams) (*dto.PaginatedUs
 
 	return paginatedResponse, nil
 }
+
 func (s *userService) UpdateUser(id uint, updates map[string]interface{}) (*dto.UserResponse, error) {
 	user, err := s.userRepo.FindByID(id)
 	if err != nil {
@@ -182,4 +194,98 @@ func mapUserToUserResponse(user *domain.User) *dto.UserResponse {
 		Email:     user.Email,
 		Role:      user.Role,
 	}
+}
+
+func (s *userService) Login(req dto.LoginRequest) (string, string, error) {
+	// 1. ค้นหาผู้ใช้และเปรียบเทียบรหัสผ่าน (เหมือนเดิม)
+	user, err := s.userRepo.FindByEmail(req.Email)
+	if err != nil {
+		return "", "", errors.New("invalid credentials 1")
+	}
+	if err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		return "", "", errors.New("invalid credentials or password")
+	}
+
+	// 2. สร้าง Access Token (อายุสั้น)
+	accessToken, err := createAccessToken(user)
+	if err != nil {
+		return "", "", err
+	}
+
+	// 3. สร้าง Refresh Token (อายุยาว)
+	// 3.1 สร้าง Token แบบสุ่ม
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", "", err
+	}
+	refreshToken := hex.EncodeToString(randomBytes)
+
+	// 3.2 Hash Token ก่อนเก็บลง DB
+	hash := sha256.New()
+	hash.Write([]byte(refreshToken))
+	hashedRefreshToken := hex.EncodeToString(hash.Sum(nil))
+
+	// 3.3 กำหนดวันหมดอายุ
+	refreshTokenExpiresAt := time.Now().Add(time.Hour * 24 * 7) // 7 วัน
+
+	// 3.4 บันทึกลง DB
+	user.RefreshToken = &hashedRefreshToken
+	user.RefreshTokenExpiresAt = &refreshTokenExpiresAt
+	if err := s.userRepo.Update(user); err != nil {
+		return "", "", err
+	}
+
+	// 4. คืนค่า Access Token (ใน body) และ Refresh Token (สำหรับตั้งเป็น cookie)
+	return accessToken, refreshToken, nil
+}
+
+func (s *userService) RefreshToken(tokenString string) (string, error) {
+	// 1. Hash token ที่ได้รับมาเพื่อนำไปค้นหาใน DB
+	hash := sha256.New()
+	hash.Write([]byte(tokenString))
+	hashedToken := hex.EncodeToString(hash.Sum(nil))
+
+	// 2. ค้นหา User จาก Hashed Refresh Token
+	user, err := s.userRepo.FindByRefreshToken(hashedToken)
+	if err != nil {
+		return "", errors.New("invalid or expired refresh token")
+	}
+
+	// 3. ตรวจสอบว่า Token หมดอายุหรือยัง
+	if user.RefreshTokenExpiresAt == nil || time.Now().After(*user.RefreshTokenExpiresAt) {
+		return "", errors.New("invalid or expired refresh token")
+	}
+
+	// 4. ถ้าทุกอย่างถูกต้อง ให้สร้าง Access Token ตัวใหม่
+	return createAccessToken(user)
+}
+
+func (s *userService) Logout(tokenString string) error {
+	if tokenString == "" {
+		return nil // ถ้าไม่มี token ก็ไม่ต้องทำอะไร
+	}
+	hash := sha256.New()
+	hash.Write([]byte(tokenString))
+	hashedToken := hex.EncodeToString(hash.Sum(nil))
+
+	user, err := s.userRepo.FindByRefreshToken(hashedToken)
+	if err != nil {
+		return nil // หาไม่เจอก็ไม่เป็นไร
+	}
+
+	// ล้างค่า Refresh Token ใน DB
+	user.RefreshToken = nil
+	user.RefreshTokenExpiresAt = nil
+	return s.userRepo.Update(user)
+}
+
+func createAccessToken(user *domain.User) (string, error) {
+	claims := jwt.MapClaims{
+		"user_id": user.ID,
+		"email":   user.Email,
+		"role":    user.Role,
+		"exp":     time.Now().Add(time.Minute * 15).Unix(), // อายุ 15 นาที
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(os.Getenv("JWT_SECRET")))
 }

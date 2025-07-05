@@ -15,6 +15,7 @@ type UserRepository interface {
 	Count() (int64, error)
 	Update(user *domain.User) error
 	Delete(id uint) error
+	FindByRefreshToken(hashedToken string) (*domain.User, error)
 }
 
 type userRepository struct {
@@ -71,4 +72,10 @@ func (r *userRepository) Delete(id uint) error {
 		return gorm.ErrRecordNotFound // คืนค่า error ถ้าไม่เจอ ID ที่จะลบ
 	}
 	return nil
+}
+
+func (r *userRepository) FindByRefreshToken(hashedToken string) (*domain.User, error) {
+	var user domain.User
+	err := r.db.Where("refresh_token = ?", hashedToken).First(&user).Error
+	return &user, err
 }

@@ -2,6 +2,7 @@
 package users
 
 import (
+	"backend/middleware"
 	"backend/users/handler"
 	"backend/users/repository"
 	"backend/users/service"
@@ -18,16 +19,22 @@ func RegisterModule(api fiber.Router, db *gorm.DB) {
 	userSvc := service.NewUserService(userRepo)
 	userHdl := handler.NewUserHandler(userSvc)
 
-	// --- 2. ลงทะเบียน Routes ---
+	apiv1 := api.Group("/api/v1")
 
-	// สร้างกลุ่มสำหรับ User-related endpoints
-	usersAPI := api.Group("/api/v1/users")
-	usersAPI.Post("/register", userHdl.HandleRegister)
-	// usersAPI.Get("/me", userHdl.HandleGetProfile) // ตัวอย่าง Endpoint สำหรับอนาคต (ต้องใช้ JWT)
+	authAPI := apiv1.Group("/auth")
+	authAPI.Post("/register", userHdl.HandleRegister)
+	authAPI.Post("/login", userHdl.HandleLogin)
+	authAPI.Post("/refresh", userHdl.HandleRefreshToken)
+	authAPI.Post("/logout", middleware.Protected(), userHdl.HandleLogout)
 
-	// สร้างกลุ่มสำหรับ Authentication endpoints
-	// authAPI := api.Group("/auth")
-	// authAPI.Post("/login", userHdl.HandleLogin) // Endpoint สำหรับทำ Login ในขั้นตอนถัดไป
+	usersAPI := apiv1.Group("/users")
+	usersAPI.Get("/me", middleware.Protected(), userHdl.HandleGetMyProfile)
+	// --- 3. ลงทะเบียน Middleware ---
+	adminOnlyAPI := usersAPI.Use(middleware.Protected(), middleware.AdminRequired())
+	adminOnlyAPI.Get("/", userHdl.HandleGetAllUsers)
+	// adminOnlyAPI.Get("/:id", userHdl.HandleGetUserByID)
+	// adminOnlyAPI.Patch("/:id", userHdl.HandleUpdateUser)
+	// adminOnlyAPI.Delete("/:id", userHdl.HandleDeleteUser)
 
 	log.Println("✅ User module registered successfully.")
 }
