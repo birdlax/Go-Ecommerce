@@ -16,6 +16,14 @@ type UserRepository interface {
 	Update(user *domain.User) error
 	Delete(id uint) error
 	FindByRefreshToken(hashedToken string) (*domain.User, error)
+
+	// Address related methods
+	CreateAddress(address *domain.Address) error
+	FindAddressesByUserID(userID uint) ([]domain.Address, error)
+	FindAddressByID(addressID uint) (*domain.Address, error)
+	UpdateAddress(address *domain.Address) error
+	DeleteAddress(addressID uint) error
+	ClearDefaultAddress(userID uint) error
 }
 
 type userRepository struct {
@@ -78,4 +86,34 @@ func (r *userRepository) FindByRefreshToken(hashedToken string) (*domain.User, e
 	var user domain.User
 	err := r.db.Where("refresh_token = ?", hashedToken).First(&user).Error
 	return &user, err
+}
+
+// Address related methods
+func (r *userRepository) CreateAddress(address *domain.Address) error {
+	return r.db.Create(address).Error
+}
+
+func (r *userRepository) FindAddressesByUserID(userID uint) ([]domain.Address, error) {
+	var addresses []domain.Address
+	err := r.db.Where("user_id = ?", userID).Find(&addresses).Error
+	return addresses, err
+}
+
+func (r *userRepository) FindAddressByID(addressID uint) (*domain.Address, error) {
+	var address domain.Address
+	err := r.db.First(&address, addressID).Error
+	return &address, err
+}
+
+func (r *userRepository) UpdateAddress(address *domain.Address) error {
+	return r.db.Save(address).Error
+}
+
+func (r *userRepository) DeleteAddress(addressID uint) error {
+	return r.db.Delete(&domain.Address{}, addressID).Error
+}
+
+// ClearDefaultAddress จะตั้งค่า is_default ทั้งหมดของ user คนนี้ให้เป็น false
+func (r *userRepository) ClearDefaultAddress(userID uint) error {
+	return r.db.Model(&domain.Address{}).Where("user_id = ?", userID).Update("is_default", false).Error
 }

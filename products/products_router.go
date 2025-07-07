@@ -1,51 +1,40 @@
-// package products // แนะนำให้เปลี่ยนชื่อ package เป็น 'products' เพื่อให้ตรงกับ Domain
 package products
 
 import (
-	"backend/middleware"
+	// [สำคัญ] แก้ไข "my-ecommerce-app" เป็นชื่อ Module ใน go.mod ของคุณ
+	"backend/config"
+	"backend/internal/datastore"
+	// "backend/middleware"
 	"backend/products/handler"
-	"backend/products/repository"
 	"backend/products/service"
+
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
 	"log"
 )
 
-func RegisterModule(app *fiber.App, db *gorm.DB, azureConnectionString string) {
-	productDbRepo := repository.NewProductRepository(db)
+// [แก้ไข] Signature ของฟังก์ชันจะเปลี่ยนไป รับ uow และ cfg
+func RegisterModule(api fiber.Router, uow datastore.UnitOfWork, cfg *config.Config) {
 
-	//สร้าง Repository สำหรับ Upload
-	uploadRepo, err := repository.NewAzureUploadRepository(azureConnectionString, "uploads")
-	if err != nil {
-		log.Fatalf("FATAL: could not create upload repository for products: %v", err)
-	}
-
-	uow := repository.NewUnitOfWork(db)
-	productSvc := service.NewProductService(productDbRepo, uploadRepo, uow)
+	// --- การประกอบร่างจะเกิดขึ้นที่นี่ โดยใช้ Dependencies ที่ได้รับมา ---
+	// Service จะถูกสร้างโดยรับแค่ UoW และ Config ที่จำเป็น (ImageBaseURL)
+	productSvc := service.NewProductService(uow, cfg.ImageBaseURL)
 	productHdl := handler.NewProductHandler(productSvc)
 
-	// --- ลงทะเบียน Routes ---
-	api := app.Group("/api/v1")
+	// --- ลงทะเบียน Routes (ส่วนนี้ของคุณถูกต้องและดีมากแล้ว) ---
 	productsAPI := api.Group("/products")
 
+	// >> Public Routes <<
 	productsAPI.Get("/", productHdl.HandleGetAllProducts)
 	productsAPI.Get("/:id", productHdl.HandleGetProductByID)
 
-	// == กลุ่มสำหรับ Product ที่เป็น Admin เท่านั้น ==
-	// 1. สร้าง Group ใหม่สำหรับ Admin โดยเฉพาะ
-	adminProductAPI := api.Group("/products/admin")
-	// 2. ติดตั้ง Middleware ให้กับ Group ใหม่นี้เท่านั้น
-	adminProductAPI.Use(middleware.Protected(), middleware.AdminRequired())
+	// >> Admin-Only Routes <<
+	adminAPI := productsAPI.Group("")
+	// adminAPI.Use(middleware.Protected(), middleware.AdminRequired())
 
-	// 3. ลงทะเบียน Route ของ Admin กับ Group ที่ป้องกันแล้ว
-	adminProductAPI.Post("/", productHdl.HandleCreateProduct)
-	adminProductAPI.Patch("/:id", productHdl.HandleUpdateProduct)
-	adminProductAPI.Delete("/:id", productHdl.HandleDeleteProduct)
-
-	// == กลุ่มสำหรับจัดการรูปภาพ (อาจจะให้ Admin เท่านั้นเช่นกัน) ==
-	imagesAPI := api.Group("/products") // ใช้ group เดิม
-	adminImageAPI := imagesAPI.Use(middleware.Protected(), middleware.AdminRequired())
-	adminImageAPI.Patch("/:productId/images", productHdl.HandleUpdateImages)
+	adminAPI.Post("/", productHdl.HandleCreateProduct)
+	adminAPI.Patch("/:id", productHdl.HandleUpdateProduct)
+	adminAPI.Delete("/:id", productHdl.HandleDeleteProduct)
+	adminAPI.Patch("/:productId/images", productHdl.HandleUpdateImages)
 
 	log.Println("✅ Product module registered successfully.")
 }

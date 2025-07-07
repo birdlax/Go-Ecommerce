@@ -13,6 +13,7 @@ import (
 type Config struct {
 	AzureConnectionString string
 	PostgresDSN           string
+	ImageBaseURL          string
 }
 
 // LoadConfig จะทำหน้าที่โหลด .env และคืนค่า Config struct ที่พร้อมใช้งาน
@@ -35,5 +36,6 @@ func LoadConfig() *Config {
 	return &Config{
 		AzureConnectionString: os.Getenv("AZURE_STORAGE_CONNECTION_STRING"),
 		PostgresDSN:           dsn,
+		ImageBaseURL:          os.Getenv("AZURE_STORAGE_BASE_URL"),
 	}
 }

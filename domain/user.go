@@ -30,4 +30,5 @@ type User struct {
 	Addresses              []Address  `json:"addresses" gorm:"foreignKey:UserID"`
 	RefreshToken           *string    `json:"-" gorm:"uniqueIndex"`
 	RefreshTokenExpiresAt  *time.Time `json:"-"`
+	Cart                   *Cart      `json:"cart" gorm:"foreignKey:UserID"`
 }

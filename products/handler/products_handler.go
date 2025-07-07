@@ -3,11 +3,14 @@ package handler
 
 import (
 	"backend/domain"
+	"backend/products/dto"
 	"backend/products/service"
+	"encoding/json"
 	"log"
 	"strconv"
 	"strings"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -22,53 +25,51 @@ func NewProductHandler(productSvc service.ProductService) *ProductHandler {
 }
 
 func (h *ProductHandler) HandleCreateProduct(c *fiber.Ctx) error {
-	// 1. รับค่า 'data' ที่เป็น JSON String
 	productDataJSON := c.FormValue("data")
 	if productDataJSON == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Missing product data field 'data'"})
+		return fiber.NewError(fiber.StatusBadRequest, "Missing product data field 'data'")
 	}
 
-	// 2. รับไฟล์ทั้งหมดจาก field 'files'
 	form, err := c.MultipartForm()
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid form data"})
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid form data")
 	}
-	files := form.File["files"] // รับ slice ของไฟล์
+	formFiles := form.File["files"]
 
-	// 3. สร้าง Request object เพื่อส่งให้ Service
-	req := service.CreateProductRequest{
+	var filesToAdd []dto.FileInput // <-- [แก้ไข] ใช้ FileInput จาก dto
+	for _, fileHeader := range formFiles {
+		file, err := fileHeader.Open()
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Cannot process uploaded file: "+fileHeader.Filename)
+		}
+		defer file.Close()
+		filesToAdd = append(filesToAdd, dto.FileInput{
+			Content:     file,
+			Filename:    fileHeader.Filename,
+			ContentType: fileHeader.Header.Get("Content-Type"),
+		})
+	}
+
+	// [แก้ไข] ใช้ DTO จาก package dto
+	req := dto.CreateProductRequest{
 		Data:  productDataJSON,
-		Files: files,
+		Files: filesToAdd,
 	}
 
-	// 4. เรียกใช้ Service
-	createdProduct, err := h.productSvc.CreateProductWithImages(c.Context(), req)
+	// Validate DTO
+	var productDataForValidation dto.CreateProductRequestData
+	if err := json.Unmarshal([]byte(req.Data), &productDataForValidation); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid product data json")
+	}
+	if err := validator.New().Struct(productDataForValidation); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Validation failed: "+err.Error())
+	}
+
+	productResponse, err := h.productSvc.CreateProductWithImages(c.Context(), req)
 	if err != nil {
-		log.Printf("Error creating product with images: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not create product"})
+		return err
 	}
-
-	return c.Status(fiber.StatusCreated).JSON(createdProduct)
-}
-
-func (h *ProductHandler) HandleCreateCategory(c *fiber.Ctx) error {
-	var req domain.Category
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Cannot parse JSON",
-		})
-	}
-	err := h.productSvc.CreateNewCategory(req)
-	if err != nil {
-		log.Printf("Error creating category: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Could not create category",
-		})
-	}
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message":  "Category created successfully",
-		"category": req,
-	})
+	return c.Status(fiber.StatusCreated).JSON(productResponse)
 }
 
 func (h *ProductHandler) HandleGetAllProducts(c *fiber.Ctx) error {
@@ -175,16 +176,28 @@ func (h *ProductHandler) HandleUpdateImages(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "Invalid product ID")
 	}
 
-	// รับไฟล์ที่จะเพิ่ม
 	form, err := c.MultipartForm()
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "Invalid form data")
 	}
-	filesToAdd := form.File["add_files"]
 
-	// รับ ID ของไฟล์ที่จะลบ
-	deleteIDsStr := c.FormValue("delete_image_ids")
+	var filesToAdd []dto.FileInput // <-- [แก้ไข] ใช้ FileInput จาก dto
+	formFiles := form.File["add_files"]
+	for _, fileHeader := range formFiles {
+		file, err := fileHeader.Open()
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Cannot process uploaded file: "+fileHeader.Filename)
+		}
+		defer file.Close()
+		filesToAdd = append(filesToAdd, dto.FileInput{
+			Content:     file,
+			Filename:    fileHeader.Filename,
+			ContentType: fileHeader.Header.Get("Content-Type"),
+		})
+	}
+
 	var imageIDsToDelete []uint
+	deleteIDsStr := c.FormValue("delete_image_ids")
 	if deleteIDsStr != "" {
 		ids := strings.Split(deleteIDsStr, ",")
 		for _, idStr := range ids {
@@ -195,13 +208,14 @@ func (h *ProductHandler) HandleUpdateImages(c *fiber.Ctx) error {
 		}
 	}
 
-	req := service.UpdateImagesRequest{
+	// [แก้ไข] ใช้ DTO จาก package dto
+	req := dto.UpdateImagesRequest{
 		FilesToAdd:       filesToAdd,
 		ImageIDsToDelete: imageIDsToDelete,
 	}
 
 	if err := h.productSvc.UpdateProductImages(c.Context(), uint(productID), req); err != nil {
-		return err // ส่งต่อให้ Error Middleware จัดการ
+		return err
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Product images updated successfully"})

@@ -1,210 +1,202 @@
-// products/service/products_service.go
 package service
 
 import (
-	"backend/domain"
-	"backend/products/repository"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math"
-	"mime/multipart"
 	"path/filepath"
 
 	"github.com/google/uuid"
+	// [สำคัญ] แก้ไข "my-ecommerce-app" เป็นชื่อ Module ใน go.mod ของคุณ
+	"backend/domain"
+	"backend/internal/datastore"
+	"backend/products/dto"
+	"backend/products/repository"
 )
 
 var ErrProductNotFound = errors.New("product not found")
 
+// ===================================================================
+// ProductService Interface (อัปเดต Return Types ให้เป็น DTO)
+// ===================================================================
 type ProductService interface {
-	CreateProductWithImages(ctx context.Context, req CreateProductRequest) (*domain.Product, error)
-	CreateNewCategory(req domain.Category) error
-	FindAllProducts(params domain.QueryParams) (*domain.PaginatedProductsDTO, error)
-	FindProductByID(id uint) (*domain.Product, error)
+	CreateProductWithImages(ctx context.Context, req dto.CreateProductRequest) (*dto.ProductResponse, error)
+	FindAllProducts(params domain.QueryParams) (*dto.PaginatedProductsDTO, error)
+	FindProductByID(id uint) (*dto.ProductResponse, error)
 	DeleteProduct(id uint) error
-	UpdateProduct(id uint, updates map[string]interface{}) (*domain.Product, error)
-	UpdateProductImages(ctx context.Context, productID uint, req UpdateImagesRequest) error
+	UpdateProduct(id uint, updates map[string]interface{}) (*dto.ProductResponse, error)
+	UpdateProductImages(ctx context.Context, productID uint, req dto.UpdateImagesRequest) error
 }
 
-type CreateProductRequest struct {
-	Data  string // JSON string of product data
-	Files []*multipart.FileHeader
-}
+// ===================================================================
+// productService Implementation
+// ===================================================================
 
 type productService struct {
-	productRepo repository.ProductRepository
-	uploadRepo  repository.UploadRepository
-	// และเก็บ Unit of Work สำหรับงาน Write ที่ต้องการ Transaction
-	uow repository.UnitOfWork
+	uow          datastore.UnitOfWork
+	imageBaseURL string
 }
 
-func NewProductService(
-	productRepo repository.ProductRepository,
-	uploadRepo repository.UploadRepository,
-	uow repository.UnitOfWork,
-) ProductService {
+// NewProductService Constructor
+func NewProductService(uow datastore.UnitOfWork, imageBaseURL string) ProductService {
 	return &productService{
-		productRepo: productRepo,
-		uploadRepo:  uploadRepo,
-		uow:         uow,
+		uow:          uow,
+		imageBaseURL: imageBaseURL,
 	}
 }
 
-type UpdateImagesRequest struct {
-	FilesToAdd       []*multipart.FileHeader
-	ImageIDsToDelete []uint
-}
+// --- เมธอดต่างๆ ที่แก้ไขให้เรียกใช้ Repository ผ่าน UoW ทั้งหมด ---
 
-func (s *productService) CreateProductWithImages(ctx context.Context, req CreateProductRequest) (*domain.Product, error) {
-	// 1. Unmarshal ข้อมูลสินค้าจาก JSON String
-	var productData domain.Product
+func (s *productService) CreateProductWithImages(ctx context.Context, req dto.CreateProductRequest) (*dto.ProductResponse, error) {
+	var productData dto.CreateProductRequestData
 	if err := json.Unmarshal([]byte(req.Data), &productData); err != nil {
 		return nil, fmt.Errorf("invalid product data json: %w", err)
 	}
 
-	// 2. สร้าง Product record ใน DB ก่อน 1 ครั้ง เพื่อเอา ProductID
-	// ตอนนี้ productData จะมี ID, CreatedAt, etc. จาก DB แล้ว
-	if err := s.productRepo.CreateProduct(&productData); err != nil {
-		return nil, fmt.Errorf("failed to create product record: %w", err)
+	productToCreate := &domain.Product{
+		Name:        productData.Name,
+		Description: productData.Description,
+		Price:       productData.Price,
+		Quantity:    productData.Quantity,
+		SKU:         productData.SKU,
+		CategoryID:  productData.CategoryID,
 	}
-	log.Printf("Successfully created product record with ID: %d", productData.ID)
 
-	// 3. วนลูปอัปโหลดไฟล์ไป Azure และเตรียมข้อมูล ProductImage
-	var imagesToCreate []domain.ProductImage
-	for i, fileHeader := range req.Files {
-		file, err := fileHeader.Open()
+	uploadedFilePaths := make(map[string]string) // temp -> final
+
+	// 1. อัปโหลดไฟล์ทั้งหมดไปที่ชั่วคราวก่อน
+	for _, fileInput := range req.Files {
+		tempPath := fmt.Sprintf("temp/%s%s", uuid.New().String(), filepath.Ext(fileInput.Filename))
+		_, err := s.uow.UploadRepository().UploadFile(ctx, tempPath, fileInput.Content, fileInput.ContentType)
 		if err != nil {
-			return nil, fmt.Errorf("cannot open file %s: %w", fileHeader.Filename, err)
+			return nil, fmt.Errorf("failed to upload file %s: %w", fileInput.Filename, err)
 		}
-		defer file.Close()
-
-		// สร้าง Path โดยใช้ ProductID ที่เพิ่งได้มา
-		ext := filepath.Ext(fileHeader.Filename)
-		newFileName := fmt.Sprintf("%s%s", uuid.New().String(), ext)
-		blobPath := fmt.Sprintf("products/%d/%s", productData.ID, newFileName)
-
-		// เรียก UploadRepository เพื่ออัปโหลดไฟล์ไป Azure
-		_, err = s.uploadRepo.UploadFile(ctx, blobPath, file, fileHeader.Header.Get("Content-Type"))
-		if err != nil {
-			// หมายเหตุ: ในระบบจริงควรมี Logic ลบ Product ที่สร้างไปแล้วถ้าอัปโหลดไฟล์ล้มเหลว (Rollback)
-			return nil, fmt.Errorf("failed to upload file %s: %w", fileHeader.Filename, err)
-		}
-
-		// เตรียมข้อมูล Image เพื่อรอการบันทึกลง DB
-		imagesToCreate = append(imagesToCreate, domain.ProductImage{
-			ProductID: productData.ID, // ใช้ ID ของ Product ที่สร้างเสร็จแล้ว
-			Path:      blobPath,
-			IsPrimary: i == 0,
-		})
+		uploadedFilePaths[tempPath] = ""
 	}
 
-	// 4. บันทึกข้อมูล Image ทั้งหมดลง DB ในครั้งเดียว (Bulk Insert)
-	if err := s.productRepo.CreateImages(imagesToCreate); err != nil {
-		// หมายเหตุ: ในระบบจริงควรมี Logic ลบไฟล์ที่อัปโหลดไปแล้วทั้งหมดถ้าบันทึก DB ล้มเหลว
-		return nil, fmt.Errorf("failed to save image records to db: %w", err)
+	// 2. ทำงานกับ Database ทั้งหมดใน Transaction เดียว
+	err := s.uow.Execute(func(repos *datastore.Repositories) error {
+		if err := repos.Product.CreateProduct(productToCreate); err != nil {
+			return err
+		}
+
+		var newImagesData []domain.ProductImage
+		i := 0
+		for tempPath := range uploadedFilePaths {
+			finalPath := fmt.Sprintf("products/%d/%s", productToCreate.ID, filepath.Base(tempPath))
+			uploadedFilePaths[tempPath] = finalPath
+			newImagesData = append(newImagesData, domain.ProductImage{
+				ProductID: productToCreate.ID,
+				Path:      finalPath,
+				IsPrimary: i == 0,
+			})
+			i++
+		}
+
+		if len(newImagesData) > 0 {
+			if err := repos.Product.CreateImages(newImagesData); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		for tempPath := range uploadedFilePaths {
+			s.uow.UploadRepository().DeleteFile(context.Background(), tempPath)
+		}
+		return nil, fmt.Errorf("database transaction failed: %w", err)
 	}
-	log.Printf("Successfully saved %d image records to database.", len(imagesToCreate))
 
-	// 5. ประกอบร่างข้อมูล Product ที่สมบูรณ์เพื่อส่งกลับ
-	// GORM จะไม่โหลด relation ให้อัตโนมัติ เราต้อง query มาใหม่ หรือประกอบเอง
-	// เพื่อความง่าย เราจะประกอบร่างเอง
-	productData.Images = imagesToCreate
+	// 3. ย้ายไฟล์ใน Azure
+	for tempPath, finalPath := range uploadedFilePaths {
+		if err := s.uow.UploadRepository().MoveFile(ctx, tempPath, finalPath); err != nil {
+			log.Printf("WARNING: failed to move blob from %s to %s: %v", tempPath, finalPath, err)
+		}
+	}
 
-	// ถ้าทุกอย่างสำเร็จ จะไม่มี error และคืนค่า product ที่สมบูรณ์กลับไป
-	return &productData, nil
+	// 4. ดึงข้อมูลล่าสุดกลับมาในรูปแบบ DTO
+	return s.FindProductByID(productToCreate.ID)
 }
 
-func (s *productService) CreateNewCategory(req domain.Category) error {
-	newCategory := &domain.Category{
-		Name:        req.Name,
-		Description: req.Description,
-	}
-
-	// เรียกใช้ Repository เพื่อบันทึกข้อมูล
-	err := s.productRepo.CreateCategory(newCategory)
+func (s *productService) FindProductByID(id uint) (*dto.ProductResponse, error) {
+	product, err := s.uow.ProductRepository().FindByID(id)
 	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// FindProductByID คือ Logic การดึงข้อมูลชิ้นเดียว และ "แปล" Error
-func (s *productService) FindProductByID(id uint) (*domain.Product, error) {
-	product, err := s.productRepo.FindProductByID(id)
-	if err != nil {
-		// "แปล" error จาก Repository เป็น error ของ Service
 		if errors.Is(err, repository.ErrNotFound) {
 			return nil, ErrProductNotFound
 		}
 		return nil, err
 	}
-
-	// เพิ่ม URL เต็มให้กับทุกรูปภาพก่อนส่งกลับไป
-	imageBaseURL := "https://goecommerce.blob.core.windows.net/uploads/"
-	for i := range product.Images {
-		product.Images[i].URL = imageBaseURL + product.Images[i].Path
-	}
-
-	return product, nil
+	return mapProductToProductResponse(product, s.imageBaseURL), nil
 }
 
-func (s *productService) FindAllProducts(params domain.QueryParams) (*domain.PaginatedProductsDTO, error) {
-	// 1. ดึงจำนวนสินค้ารวมทั้งหมดจาก Repository
-	totalItems, err := s.productRepo.Count()
-	if err != nil {
-		return nil, err
-	}
-
-	// 2. ดึงข้อมูลสินค้าในหน้าที่ต้องการ
-	products, err := s.productRepo.FindAll(params)
-	if err != nil {
-		return nil, err
-	}
-
-	// 3. แปลง Domain Model เป็น DTO (เหมือนเดิม)
-	imageBaseURL := "https://goecommerce.blob.core.windows.net/uploads/"
-	dtos := make([]domain.ProductListDTO, 0, len(products))
-	for _, p := range products {
-		// สร้าง DTO พร้อมคัดลอกข้อมูลทั้งหมดจาก p มาใส่ทันที
-		dto := domain.ProductListDTO{
-			ID:           p.ID,
-			Name:         p.Name,
-			Price:        p.Price,
-			SKU:          p.SKU,
-			CategoryName: p.Category.Name, // สามารถดึงได้โดยตรงเพราะ Repository ทำ Preload("Category") ไว้แล้ว
+func (s *productService) FindAllProducts(params domain.QueryParams) (*dto.PaginatedProductsDTO, error) {
+	var paginatedResponse *dto.PaginatedProductsDTO
+	err := s.uow.Execute(func(repos *datastore.Repositories) error {
+		totalItems, err := repos.Product.Count()
+		if err != nil {
+			return err
 		}
 
-		// ค้นหารูปปก (ยังคงเหมือนเดิม)
-		if len(p.Images) > 0 {
-			// สมมติเอารูปแรกเป็นรูปปก
-			dto.PrimaryImageURL = imageBaseURL + p.Images[0].Path
+		products, err := repos.Product.FindAll(params)
+		if err != nil {
+			return err
 		}
 
-		dtos = append(dtos, dto)
+		dtos := make([]dto.ProductListDTO, 0, len(products))
+		for _, p := range products {
+			dto := dto.ProductListDTO{
+				ID:           p.ID,
+				Name:         p.Name,
+				Price:        p.Price,
+				SKU:          p.SKU,
+				CategoryName: p.Category.Name,
+			}
+			if len(p.Images) > 0 {
+				dto.PrimaryImageURL = s.imageBaseURL + "/" + p.Images[0].Path
+			}
+			dtos = append(dtos, dto)
+		}
+
+		totalPages := int(math.Ceil(float64(totalItems) / float64(params.Limit)))
+		paginatedResponse = &dto.PaginatedProductsDTO{
+			Data:        dtos,
+			TotalItems:  totalItems,
+			TotalPages:  totalPages,
+			CurrentPage: params.Page,
+			Limit:       params.Limit,
+		}
+		return nil
+	})
+	return paginatedResponse, err
+}
+
+func (s *productService) UpdateProduct(id uint, updates map[string]interface{}) (*dto.ProductResponse, error) {
+	err := s.uow.Execute(func(repos *datastore.Repositories) error {
+		_, err := repos.Product.FindProductByID(id)
+		if err != nil {
+			return err
+		}
+		return repos.Product.Update(id, updates)
+	})
+
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrProductNotFound
+		}
+		return nil, err
 	}
-
-	// 4. คำนวณค่า Pagination
-	totalPages := int(math.Ceil(float64(totalItems) / float64(params.Limit)))
-
-	// 5. สร้าง Response DTO สุดท้าย
-	paginatedResponse := &domain.PaginatedProductsDTO{
-		Data:        dtos,
-		TotalItems:  totalItems,
-		TotalPages:  totalPages,
-		CurrentPage: params.Page,
-		Limit:       params.Limit,
-	}
-
-	return paginatedResponse, nil
+	return s.FindProductByID(id)
 }
 
 func (s *productService) DeleteProduct(id uint) error {
-	err := s.productRepo.Delete(id)
+	err := s.uow.Execute(func(repos *datastore.Repositories) error {
+		return repos.Product.Delete(id)
+	})
 	if err != nil {
-		// แปล error จาก repository เป็น error ของ service
 		if errors.Is(err, repository.ErrNotFound) {
 			return ErrProductNotFound
 		}
@@ -213,96 +205,96 @@ func (s *productService) DeleteProduct(id uint) error {
 	return nil
 }
 
-func (s *productService) UpdateProduct(id uint, updates map[string]interface{}) (*domain.Product, error) {
-	// 1. ตรวจสอบว่ามีสินค้านี้อยู่จริงหรือไม่ก่อนทำการอัปเดต
-	// โดยการเรียก FindProductByID ซึ่งจะคืนค่า ErrProductNotFound ถ้าไม่มี
-	_, err := s.productRepo.FindProductByID(id)
-	if err != nil {
-		// "แปล" error จาก repository เป็น error ของ service
-		if errors.Is(err, repository.ErrNotFound) {
-			return nil, ErrProductNotFound
-		}
-		return nil, err
-	}
+func (s *productService) UpdateProductImages(ctx context.Context, productID uint, req dto.UpdateImagesRequest) error {
+	var pathsToDeleteFromStorage []string
 
-	// 2. ถ้ามีอยู่จริง ก็สั่งให้อัปเดตข้อมูล
-	if err := s.productRepo.Update(id, updates); err != nil {
-		return nil, err
-	}
-
-	// 3. ดึงข้อมูลตัวเต็มที่อัปเดตแล้วกลับไปแสดง
-	return s.productRepo.FindProductByID(id)
-}
-
-func (s *productService) UpdateProductImages(ctx context.Context, productID uint, req UpdateImagesRequest) error {
-	// Logic การอัปโหลดไฟล์ไป Azure ยังคงทำนอก Transaction
-	// เพราะเราไม่อยากให้ DB transaction ค้างนานระหว่างรออัปโหลด
-	var newImagesData []domain.ProductImage
-	if len(req.FilesToAdd) > 0 {
-		for _, fileHeader := range req.FilesToAdd {
-			file, err := fileHeader.Open()
-			if err != nil {
-				return err
-			}
-			defer file.Close()
-
-			ext := filepath.Ext(fileHeader.Filename)
-			newFileName := fmt.Sprintf("%s%s", uuid.New().String(), ext)
-			blobPath := fmt.Sprintf("products/%d/%s", productID, newFileName)
-
-			_, err = s.uploadRepo.UploadFile(ctx, blobPath, file, fileHeader.Header.Get("Content-Type"))
-			if err != nil {
-				return err
-			}
-
-			newImagesData = append(newImagesData, domain.ProductImage{
-				ProductID: productID,
-				Path:      blobPath,
-				IsPrimary: false,
-			})
-		}
-	}
-
-	var pathsToDelete []string
-
-	// --- เริ่มการทำงานกับ Database ผ่าน Unit of Work ---
-	err := s.uow.Execute(func(repos *repository.Repositories) error {
-		// Logic การลบและเพิ่มจะเกิดในนี้ โดยเรียกใช้ repo จาก UoW
-		// repos.Product ตอนนี้คือ instance ที่ทำงานบน transaction
-
+	err := s.uow.Execute(func(repos *datastore.Repositories) error {
 		if len(req.ImageIDsToDelete) > 0 {
 			imagesToDelete, err := repos.Product.FindImagesByIDs(req.ImageIDsToDelete)
 			if err != nil {
 				return err
 			}
 			for _, img := range imagesToDelete {
-				pathsToDelete = append(pathsToDelete, img.Path)
+				pathsToDeleteFromStorage = append(pathsToDeleteFromStorage, img.Path)
 			}
 			if err := repos.Product.DeleteImagesByIDs(req.ImageIDsToDelete); err != nil {
 				return err
 			}
 		}
 
-		if len(newImagesData) > 0 {
+		if len(req.FilesToAdd) > 0 {
+			var newImagesData []domain.ProductImage
+			for _, fileInput := range req.FilesToAdd {
+				ext := filepath.Ext(fileInput.Filename)
+				newFileName := fmt.Sprintf("%s%s", uuid.New().String(), ext)
+				blobPath := fmt.Sprintf("products/%d/%s", productID, newFileName)
+
+				_, err := s.uow.UploadRepository().UploadFile(ctx, blobPath, fileInput.Content, fileInput.ContentType)
+				if err != nil {
+					return err
+				}
+
+				newImagesData = append(newImagesData, domain.ProductImage{
+					ProductID: productID,
+					Path:      blobPath,
+					IsPrimary: false,
+				})
+			}
 			if err := repos.Product.CreateImages(newImagesData); err != nil {
 				return err
 			}
 		}
-
-		return nil // คืนค่า nil เพื่อ Commit Transaction
+		return nil
 	})
 
 	if err != nil {
-		// TODO: ควรมี Logic ลบไฟล์ที่เพิ่งอัปโหลดไป ถ้า DB Transaction ล้มเหลว
 		return err
 	}
 
-	// ลบไฟล์เก่าออกจาก Azure หลังจาก DB Transaction สำเร็จ
-	for _, path := range pathsToDelete {
-		if err := s.uploadRepo.DeleteFile(ctx, path); err != nil {
+	for _, path := range pathsToDeleteFromStorage {
+		if err := s.uow.UploadRepository().DeleteFile(ctx, path); err != nil {
 			log.Printf("WARNING: Failed to delete old blob object '%s': %v", path, err)
 		}
 	}
-
 	return nil
+}
+
+// ===================================================================
+// Helper functions
+// ===================================================================
+
+func mapProductToProductResponse(product *domain.Product, imageBaseURL string) *dto.ProductResponse {
+	imagesDto := make([]dto.ImageResponse, 0, len(product.Images))
+	for _, img := range product.Images {
+		imagesDto = append(imagesDto, dto.ImageResponse{
+			ID:        img.ID,
+			URL:       imageBaseURL + "/" + img.Path,
+			IsPrimary: img.IsPrimary,
+		})
+	}
+
+	return &dto.ProductResponse{
+		ID:          product.ID,
+		Name:        product.Name,
+		Description: product.Description,
+		Price:       product.Price,
+		Quantity:    product.Quantity,
+		SKU:         product.SKU,
+		Category: dto.CategoryResponse{
+			ID:   product.Category.ID,
+			Name: product.Category.Name,
+		},
+		Images:    imagesDto,
+		CreatedAt: product.CreatedAt,
+		UpdatedAt: product.UpdatedAt,
+	}
+}
+
+// getKeysFromMap ใช้สำหรับ CreateProductWithImages
+func getKeysFromMap(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

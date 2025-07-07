@@ -159,3 +159,124 @@ func (h *UserHandler) HandleGetMyProfile(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusOK).JSON(userResponse)
 }
+
+// HandleGetUserByID สำหรับ Admin ดึงข้อมูลผู้ใช้รายบุคคล
+func (h *UserHandler) HandleGetUserByID(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid user ID format")
+	}
+
+	userResponse, err := h.userSvc.FindUserByID(uint(id))
+	if err != nil {
+		return err // ส่งต่อให้ Centralized Error Handler จัดการ
+	}
+
+	return c.Status(fiber.StatusOK).JSON(userResponse)
+}
+
+// HandleUpdateUser สำหรับ Admin อัปเดตข้อมูลผู้ใช้ (เช่น Role, IsActive)
+func (h *UserHandler) HandleUpdateUser(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid user ID format")
+	}
+
+	var updates map[string]interface{}
+	if err := c.BodyParser(&updates); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Cannot parse JSON")
+	}
+
+	// ลบ field ที่ไม่ควรให้แก้ไขผ่าน API นี้ได้
+	delete(updates, "id")
+	delete(updates, "password")
+	delete(updates, "email")
+
+	updatedUser, err := h.userSvc.UpdateUser(uint(id), updates)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusOK).JSON(updatedUser)
+}
+
+// HandleDeleteUser สำหรับ Admin ทำการ Soft Delete ผู้ใช้
+func (h *UserHandler) HandleDeleteUser(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid user ID format")
+	}
+
+	if err := h.userSvc.DeleteUser(uint(id)); err != nil {
+		return err
+	}
+
+	// 204 No Content เป็นการตอบกลับที่เหมาะสมสำหรับการลบที่สำเร็จ
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// address related handlers
+func (h *UserHandler) HandleAddAddress(c *fiber.Ctx) error {
+	claims := c.Locals("user").(*middleware.JwtClaims) // ดึง user id จาก token
+	var req dto.AddressRequest
+
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+	}
+	validate := validator.New()
+	if err := validate.Struct(req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Validation failed: "+err.Error())
+	}
+	address, err := h.userSvc.AddAddress(claims.UserID, req)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(address)
+}
+
+func (h *UserHandler) HandleGetUserAddresses(c *fiber.Ctx) error {
+	claims := c.Locals("user").(*middleware.JwtClaims)
+	addresses, err := h.userSvc.GetUserAddresses(claims.UserID)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(addresses)
+}
+
+func (h *UserHandler) HandleUpdateAddress(c *fiber.Ctx) error {
+	claims := c.Locals("user").(*middleware.JwtClaims)
+	addressID, err := c.ParamsInt("addressId")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid address ID format")
+	}
+
+	var req dto.AddressRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+	}
+	validate := validator.New()
+	if err := validate.Struct(req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Validation failed: "+err.Error())
+	}
+
+	address, err := h.userSvc.UpdateAddress(claims.UserID, uint(addressID), req)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusOK).JSON(address)
+}
+func (h *UserHandler) HandleDeleteAddress(c *fiber.Ctx) error {
+	claims := c.Locals("user").(*middleware.JwtClaims)
+	addressID, err := c.ParamsInt("addressId")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid address ID format")
+	}
+
+	if err := h.userSvc.DeleteAddress(claims.UserID, uint(addressID)); err != nil {
+		return err
+	}
+
+	return c.SendStatus(fiber.StatusNoContent) // 204 No Content
+}

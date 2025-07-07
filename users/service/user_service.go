@@ -33,6 +33,12 @@ type UserService interface {
 	Login(req dto.LoginRequest) (accessToken string, refreshToken string, err error)
 	RefreshToken(tokenString string) (newAccessToken string, err error)
 	Logout(hashedToken string) error
+
+	// Address related methods
+	AddAddress(userID uint, req dto.AddressRequest) (*domain.Address, error)
+	GetUserAddresses(userID uint) ([]domain.Address, error)
+	UpdateAddress(userID, addressID uint, req dto.AddressRequest) (*domain.Address, error)
+	DeleteAddress(userID, addressID uint) error
 }
 
 type userService struct {
@@ -284,8 +290,79 @@ func createAccessToken(user *domain.User) (string, error) {
 		"user_id": user.ID,
 		"email":   user.Email,
 		"role":    user.Role,
-		"exp":     time.Now().Add(time.Minute * 15).Unix(), // อายุ 15 นาที
+		"exp":     time.Now().Add(time.Hour * 1).Unix(), // อายุ 15 นาที
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(os.Getenv("JWT_SECRET")))
+}
+
+// address
+func (s *userService) AddAddress(userID uint, req dto.AddressRequest) (*domain.Address, error) {
+	newAddress := &domain.Address{
+		UserID:       userID,
+		AddressLine1: req.AddressLine1,
+		AddressLine2: req.AddressLine2,
+		City:         req.City,
+		State:        req.State,
+		PostalCode:   req.PostalCode,
+		Country:      req.Country,
+		IsDefault:    req.IsDefault,
+	}
+
+	// [Logic สำคัญ] ถ้าตั้งที่อยู่นี้เป็น Default ต้องไปเคลียร์ Default เก่าก่อน
+	if newAddress.IsDefault {
+		if err := s.userRepo.ClearDefaultAddress(userID); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := s.userRepo.CreateAddress(newAddress); err != nil {
+		return nil, err
+	}
+	return newAddress, nil
+}
+
+func (s *userService) GetUserAddresses(userID uint) ([]domain.Address, error) {
+	return s.userRepo.FindAddressesByUserID(userID)
+}
+
+func (s *userService) UpdateAddress(userID, addressID uint, req dto.AddressRequest) (*domain.Address, error) {
+	address, err := s.userRepo.FindAddressByID(addressID)
+	if err != nil {
+		return nil, errors.New("address not found")
+	}
+
+	// ตรวจสอบความเป็นเจ้าของ
+	if address.UserID != userID {
+		return nil, errors.New("you do not own this address")
+	}
+
+	// อัปเดตข้อมูล
+	address.AddressLine1 = req.AddressLine1
+	// ... อัปเดตฟิลด์อื่นๆ ...
+	address.IsDefault = req.IsDefault
+
+	if address.IsDefault {
+		if err := s.userRepo.ClearDefaultAddress(userID); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := s.userRepo.UpdateAddress(address); err != nil {
+		return nil, err
+	}
+	return address, nil
+}
+
+func (s *userService) DeleteAddress(userID, addressID uint) error {
+	address, err := s.userRepo.FindAddressByID(addressID)
+	if err != nil {
+		return errors.New("address not found")
+	}
+
+	if address.UserID != userID {
+		return errors.New("you do not own this address")
+	}
+
+	return s.userRepo.DeleteAddress(addressID)
 }

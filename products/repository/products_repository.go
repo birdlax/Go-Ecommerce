@@ -21,6 +21,7 @@ type ProductRepository interface {
 	FindImageByID(id uint) (*domain.ProductImage, error)
 	FindImagesByIDs(ids []uint) ([]domain.ProductImage, error)
 	DeleteImagesByIDs(ids []uint) error
+	FindByID(id uint) (*domain.Product, error)
 }
 
 // ... UploadRepository Interface ...
@@ -151,4 +152,16 @@ func (r *productRepository) FindImagesByIDs(ids []uint) ([]domain.ProductImage, 
 func (r *productRepository) DeleteImagesByIDs(ids []uint) error {
 	// ใช้ gorm.Model จะทำการ Soft Delete โดยอัตโนมัติ
 	return r.db.Delete(&domain.ProductImage{}, ids).Error
+}
+
+func (r *productRepository) FindByID(id uint) (*domain.Product, error) {
+	var product domain.Product
+	err := r.db.First(&product, id).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &product, nil
 }
