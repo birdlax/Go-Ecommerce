@@ -1,4 +1,8 @@
 .env
+.env.prod
+.env.*
+!.env.example
 Containers
 go.mod
 go.sum
+

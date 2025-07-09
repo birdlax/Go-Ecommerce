@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  # Service สำหรับ Go App ของเรา
+  app:
+    container_name: go_ecommerce_api
+    build: . # สั่งให้ build จาก Dockerfile ใน directory ปัจจุบัน
+    ports:
+      - "8080:8080" # Map port 8080 ของเครื่องเรากับ port 8080 ใน container
+    depends_on: # บอกให้รอจนกว่า postgres จะพร้อมใช้งานก่อน
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Service สำหรับ PostgreSQL (เหมือนเดิม)
+  postgres:
+    image: postgres:latest
+    container_name: postgressql
+    environment:
+      POSTGRES_DB: mydatabase
+      POSTGRES_USER: birdlax
+      POSTGRES_PASSWORD: passwordbirdlax
+      TZ: Asia/Bangkok
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U birdlax -d mydatabase"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
