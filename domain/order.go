@@ -23,7 +23,10 @@ type Order struct {
 	User              User
 	OrderItems        []OrderItem `gorm:"foreignKey:OrderID"`
 	TotalPrice        float64     `gorm:"not null"`
-	ShippingAddressID uint        `gorm:"not null"` // ID ของที่อยู่ที่จะจัดส่ง
+	Discount          float64     `gorm:"not null;default:0"` // <-- เพิ่ม: ยอดส่วนลด
+	FinalPrice        float64     `gorm:"not null"`           // <-- เพิ่ม: ยอดที่ต้องจ่ายจริง
+	AppliedCouponCode *string     `gorm:"type:varchar(50)"`   // <-- เพิ่ม: โค้ดคูปองที่ใช้
+	ShippingAddressID uint        `gorm:"not null"`           // ID ของที่อยู่ที่จะจัดส่ง
 	ShippingAddress   Address     `gorm:"foreignKey:ShippingAddressID"`
 	PaymentMethod     *string     `gorm:"type:varchar(50)"`
 	Status            OrderStatus `gorm:"type:varchar(20);not null;default:'pending'"`

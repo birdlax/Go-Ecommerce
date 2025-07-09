@@ -23,6 +23,7 @@ func RegisterModule(api fiber.Router, uow datastore.UnitOfWork, cfg *config.Conf
 	cartAPI.Post("/items", cartHdl.HandleAddItemToCart)
 	cartAPI.Patch("/items/:itemId", cartHdl.HandleUpdateCartItem)
 	cartAPI.Delete("/items/:itemId", cartHdl.HandleRemoveCartItem)
+	cartAPI.Post("/apply-coupon", cartHdl.HandleApplyCoupon)
 
 	log.Println("✅ Cart module registered successfully.")
 }

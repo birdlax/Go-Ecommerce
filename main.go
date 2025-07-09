@@ -5,6 +5,8 @@ import (
 	"backend/carts"
 	"backend/categories"
 	"backend/config"
+	"backend/coupons"
+	"backend/dashboard"
 	"backend/domain"
 	"backend/internal/datastore"
 	"backend/middleware"
@@ -30,6 +32,7 @@ func main() {
 		&domain.User{}, &domain.Address{},
 		&domain.Cart{}, &domain.CartItem{},
 		&domain.Order{}, &domain.OrderItem{},
+		&domain.Coupon{},
 	)
 
 	// 3. สร้าง Dependencies ส่วนกลาง
@@ -51,6 +54,8 @@ func main() {
 	users.RegisterModule(api, uow, cfg)
 	carts.RegisterModule(api, uow, cfg)
 	orders.RegisterModule(api, uow, cfg)
+	dashboard.RegisterModule(api, uow, cfg)
+	coupons.RegisterModule(api, uow, cfg)
 
 	log.Println("Server started on :8080")
 	app.Listen(":8080")

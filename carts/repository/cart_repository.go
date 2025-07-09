@@ -18,6 +18,7 @@ type CartRepository interface {
 	RemoveItem(cartItemID uint) error
 	ClearCart(cartID uint) error
 	FindItemByCartIDAndProductID(cartID, productID uint) (*domain.CartItem, error)
+	Update(cart *domain.Cart) error
 }
 
 type cartRepository struct {
@@ -62,21 +63,15 @@ func (r *cartRepository) AddItem(cartID, productID uint, quantity uint) (*domain
 func (r *cartRepository) GetCartByUserID(userID uint) (*domain.Cart, error) {
 	var cart domain.Cart
 	err := r.db.
+		Preload("Coupon"). // <-- [แก้ไข] เพิ่มบรรทัดนี้เพื่อดึงข้อมูลคูปองมาด้วย
 		Preload("Items.Product.Category").
-		Preload("Items.Product.Images"). // Preload รูปภาพของ Product ในตะกร้าด้วย
+		Preload("Items.Product.Images").
 		First(&cart, "user_id = ?", userID).Error
 
-	// --- จุดที่แก้ไข ---
-	// ตรวจสอบ error ที่นี่
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// ถ้าหาไม่เจอ ให้ "แปล" เป็น error ของเราเอง
-			return nil, ErrNotFound
-		}
-		// ถ้าเป็น error อื่น ก็ส่งออกไปตามเดิม
-		return nil, err
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
 	}
-	return &cart, nil
+	return &cart, err
 }
 
 func (r *cartRepository) UpdateItemQuantity(cartItemID uint, quantity uint) error {
@@ -95,4 +90,9 @@ func (r *cartRepository) FindItemByCartIDAndProductID(cartID, productID uint) (*
 	var cartItem domain.CartItem
 	err := r.db.Where("cart_id = ? AND product_id = ?", cartID, productID).First(&cartItem).Error
 	return &cartItem, err
+}
+func (r *cartRepository) Update(cart *domain.Cart) error {
+	// Save จะทำการอัปเดตทุกฟิลด์ของ cart object ที่มี Primary Key อยู่แล้ว
+	// เหมาะสำหรับการอัปเดต CouponID
+	return r.db.Save(cart).Error
 }

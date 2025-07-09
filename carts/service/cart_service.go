@@ -6,17 +6,25 @@ import (
 	"backend/domain"
 	"backend/internal/datastore"
 	"errors"
+	"time"
 )
 
 var ErrProductNotFound = errors.New("product not found")
 var ErrNotEnoughStock = errors.New("not enough stock")
 var ErrItemNotInCart = errors.New("item not in user's cart")
+var (
+	ErrCouponNotFound   = errors.New("coupon not found or is invalid")
+	ErrCouponExpired    = errors.New("coupon has expired")
+	ErrCouponUsageLimit = errors.New("coupon has reached its usage limit")
+)
 
 type CartService interface {
 	AddItemToCart(userID uint, req dto.AddItemRequest) (*dto.CartResponse, error)
 	GetCart(userID uint) (*dto.CartResponse, error)
 	UpdateCartItem(userID, cartItemID uint, quantity uint) (*dto.CartResponse, error)
 	RemoveCartItem(userID, cartItemID uint) (*dto.CartResponse, error)
+	ApplyCoupon(userID uint, couponCode string) (*dto.CartResponse, error)
+	RemoveCoupon(userID uint) (*dto.CartResponse, error)
 }
 
 type cartService struct {
@@ -64,7 +72,7 @@ func (s *cartService) GetCart(userID uint) (*dto.CartResponse, error) {
 	if err != nil {
 		// ถ้าหาไม่เจอ (เช่น user ใหม่) ให้สร้างตะกร้าเปล่าๆ คืนไป
 		if errors.Is(err, repository.ErrNotFound) {
-			emptyCart := &dto.CartResponse{UserID: userID, Items: []dto.CartItemResponse{}, TotalPrice: 0}
+			emptyCart := &dto.CartResponse{UserID: userID, Items: []dto.CartItemResponse{}}
 			// เราอาจจะสร้าง cart จริงๆ ใน db ไปเลยก็ได้
 			newCart, dbErr := s.uow.CartRepository().GetOrCreateCart(userID)
 			if dbErr != nil {
@@ -109,14 +117,16 @@ func (s *cartService) RemoveCartItem(userID, cartItemID uint) (*dto.CartResponse
 	return s.GetCart(userID)
 }
 
-// mapCartToCartResponse คือ helper function สำหรับแปลงข้อมูล
 func (s *cartService) mapCartToCartResponse(cart *domain.Cart) *dto.CartResponse {
-	var totalPrice float64
+	var subtotal float64
+	var discount float64
+
 	itemResponses := make([]dto.CartItemResponse, 0, len(cart.Items))
 
 	for _, item := range cart.Items {
 		var imageURL string
-		if len(item.Product.Images) > 0 {
+		// ตรวจสอบให้แน่ใจว่า Product และ Images ถูก Preload มาด้วย
+		if item.Product.ID != 0 && len(item.Product.Images) > 0 {
 			imageURL = s.imageBaseURL + "/" + item.Product.Images[0].Path
 		}
 
@@ -128,13 +138,93 @@ func (s *cartService) mapCartToCartResponse(cart *domain.Cart) *dto.CartResponse
 			Quantity:  item.Quantity,
 			ImageURL:  imageURL,
 		})
-		totalPrice += item.Product.Price * float64(item.Quantity)
+		// คำนวณราคารวมก่อนหักส่วนลด
+		subtotal += item.Product.Price * float64(item.Quantity)
 	}
 
-	return &dto.CartResponse{
+	// คำนวณส่วนลดถ้ามีคูปองผูกอยู่
+	if cart.Coupon != nil && cart.Coupon.ID != 0 {
+		switch cart.Coupon.DiscountType {
+		case domain.DiscountTypeFixed:
+			discount = cart.Coupon.DiscountValue
+		case domain.DiscountTypePercentage:
+			discount = subtotal * (cart.Coupon.DiscountValue / 100)
+		}
+	}
+
+	grandTotal := subtotal - discount
+	if grandTotal < 0 {
+		grandTotal = 0 // ราคาสุดท้ายต้องไม่ติดลบ
+	}
+
+	// สร้าง Response DTO
+	response := &dto.CartResponse{
 		ID:         cart.ID,
 		UserID:     cart.UserID,
 		Items:      itemResponses,
-		TotalPrice: totalPrice,
+		Subtotal:   subtotal,
+		Discount:   discount,
+		GrandTotal: grandTotal,
 	}
+
+	// เพิ่มโค้ดคูปองเข้าไปใน Response ถ้ามี
+	if cart.Coupon != nil && cart.Coupon.ID != 0 {
+		response.AppliedCoupon = &cart.Coupon.Code
+	}
+
+	return response
+}
+
+func (s *cartService) ApplyCoupon(userID uint, couponCode string) (*dto.CartResponse, error) {
+	var cart *domain.Cart
+	err := s.uow.Execute(func(repos *datastore.Repositories) error {
+		// 1. หา Coupon
+		coupon, err := repos.Coupon.FindByCode(couponCode)
+		if err != nil {
+			return ErrCouponNotFound
+		}
+
+		// 2. ตรวจสอบเงื่อนไข Coupon
+		if !coupon.IsActive || time.Now().After(coupon.ExpiryDate) {
+			return ErrCouponExpired
+		}
+		if coupon.UsageCount >= coupon.UsageLimit {
+			return ErrCouponUsageLimit
+		}
+
+		// 3. หาตะกร้าของผู้ใช้
+		cart, err = repos.Cart.GetOrCreateCart(userID)
+		if err != nil {
+			return err
+		}
+
+		// 4. ผูก Coupon กับ Cart
+		cart.CouponID = &coupon.ID
+		return repos.Cart.Update(cart) // ต้องเพิ่ม Update ใน Repo
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return s.GetCart(userID)
+}
+
+func (s *cartService) RemoveCoupon(userID uint) (*dto.CartResponse, error) {
+	// var cart *domain.Cart // <-- ลบบรรทัดนี้ทิ้ง
+
+	err := s.uow.Execute(func(repos *datastore.Repositories) error {
+		cart, err := repos.Cart.GetCartByUserID(userID)
+		if err != nil {
+			return err
+		}
+
+		cart.CouponID = nil
+		cart.Coupon = nil // อาจจะต้องเคลียร์ relation ด้วย
+		return repos.Cart.Update(cart)
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return s.GetCart(userID)
 }

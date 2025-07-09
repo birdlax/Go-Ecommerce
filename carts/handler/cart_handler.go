@@ -83,3 +83,22 @@ func (h *CartHandler) HandleRemoveCartItem(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusOK).JSON(updatedCart)
 }
+
+// เพิ่ม HandleApplyCoupon
+func (h *CartHandler) HandleApplyCoupon(c *fiber.Ctx) error {
+	claims := c.Locals("user").(*middleware.JwtClaims)
+	var req dto.ApplyCouponRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+	}
+	if err := validator.New().Struct(req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Validation failed: "+err.Error())
+	}
+
+	updatedCart, err := h.cartSvc.ApplyCoupon(claims.UserID, req.CouponCode)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusOK).JSON(updatedCart)
+}
