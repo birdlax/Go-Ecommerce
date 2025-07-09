@@ -1,10 +1,10 @@
 package products
 
 import (
-	// [สำคัญ] แก้ไข "my-ecommerce-app" เป็นชื่อ Module ใน go.mod ของคุณ
+	// [สำคัญ] แก้ไข "backend" เป็นชื่อ Module ใน go.mod ของคุณ
 	"backend/config"
 	"backend/internal/datastore"
-	// "backend/middleware"
+	"backend/middleware"
 	"backend/products/handler"
 	"backend/products/service"
 
@@ -29,7 +29,7 @@ func RegisterModule(api fiber.Router, uow datastore.UnitOfWork, cfg *config.Conf
 
 	// >> Admin-Only Routes <<
 	adminAPI := productsAPI.Group("")
-	// adminAPI.Use(middleware.Protected(), middleware.AdminRequired())
+	adminAPI.Use(middleware.Protected(), middleware.AdminRequired())
 
 	adminAPI.Post("/", productHdl.HandleCreateProduct)
 	adminAPI.Patch("/:id", productHdl.HandleUpdateProduct)

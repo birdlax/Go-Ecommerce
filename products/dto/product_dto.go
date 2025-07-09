@@ -16,6 +16,17 @@ type FileInput struct {
 	Filename    string
 	ContentType string
 }
+type QueryParams struct {
+	Page   int
+	Limit  int
+	SortBy string
+	Order  string
+	// --- ฟิลด์ใหม่ ---
+	Search     string
+	CategoryID uint
+	MinPrice   float64
+	MaxPrice   float64
+}
 
 // CreateProductRequestData คือ Struct สำหรับข้อมูลสินค้าที่เป็น JSON
 type CreateProductRequestData struct {

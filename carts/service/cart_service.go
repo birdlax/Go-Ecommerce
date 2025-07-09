@@ -1,12 +1,11 @@
 package service
 
 import (
-	"backend/domain"
-	"errors"
-
 	"backend/carts/dto"
 	"backend/carts/repository"
-	productRepo "backend/products/repository"
+	"backend/domain"
+	"backend/internal/datastore"
+	"errors"
 )
 
 var ErrProductNotFound = errors.New("product not found")
@@ -21,15 +20,13 @@ type CartService interface {
 }
 
 type cartService struct {
-	cartRepo     repository.CartRepository
-	productRepo  productRepo.ProductRepository
+	uow          datastore.UnitOfWork
 	imageBaseURL string
 }
 
-func NewCartService(cartRepo repository.CartRepository, productRepo productRepo.ProductRepository, imageBaseURL string) CartService {
+func NewCartService(uow datastore.UnitOfWork, imageBaseURL string) CartService {
 	return &cartService{
-		cartRepo:     cartRepo,
-		productRepo:  productRepo,
+		uow:          uow,
 		imageBaseURL: imageBaseURL,
 	}
 }
@@ -37,7 +34,7 @@ func NewCartService(cartRepo repository.CartRepository, productRepo productRepo.
 // AddItemToCart เพิ่มสินค้าลงตะกร้า
 func (s *cartService) AddItemToCart(userID uint, req dto.AddItemRequest) (*dto.CartResponse, error) {
 	// 1. ตรวจสอบว่าสินค้ามีอยู่จริงและมีสต็อกเพียงพอหรือไม่
-	product, err := s.productRepo.FindProductByID(req.ProductID)
+	product, err := s.uow.ProductRepository().FindProductByID(req.ProductID)
 	if err != nil {
 		return nil, ErrProductNotFound
 	}
@@ -46,13 +43,14 @@ func (s *cartService) AddItemToCart(userID uint, req dto.AddItemRequest) (*dto.C
 	}
 
 	// 2. หาหรือสร้างตะกร้าสำหรับ User คนนี้
-	cart, err := s.cartRepo.GetOrCreateCart(userID)
+	cart, err := s.uow.CartRepository().GetOrCreateCart(userID)
+
 	if err != nil {
 		return nil, err
 	}
 
 	// 3. เพิ่ม Item ลงในตะกร้า (Repository จะจัดการเรื่องบวกจำนวนเอง)
-	if _, err := s.cartRepo.AddItem(cart.ID, req.ProductID, req.Quantity); err != nil {
+	if _, err := s.uow.CartRepository().AddItem(cart.ID, req.ProductID, req.Quantity); err != nil {
 		return nil, err
 	}
 
@@ -62,13 +60,13 @@ func (s *cartService) AddItemToCart(userID uint, req dto.AddItemRequest) (*dto.C
 
 // GetCart ดึงข้อมูลตะกร้าทั้งหมด
 func (s *cartService) GetCart(userID uint) (*dto.CartResponse, error) {
-	cart, err := s.cartRepo.GetCartByUserID(userID)
+	cart, err := s.uow.CartRepository().GetCartByUserID(userID)
 	if err != nil {
 		// ถ้าหาไม่เจอ (เช่น user ใหม่) ให้สร้างตะกร้าเปล่าๆ คืนไป
 		if errors.Is(err, repository.ErrNotFound) {
 			emptyCart := &dto.CartResponse{UserID: userID, Items: []dto.CartItemResponse{}, TotalPrice: 0}
 			// เราอาจจะสร้าง cart จริงๆ ใน db ไปเลยก็ได้
-			newCart, dbErr := s.cartRepo.GetOrCreateCart(userID)
+			newCart, dbErr := s.uow.CartRepository().GetOrCreateCart(userID)
 			if dbErr != nil {
 				return nil, dbErr
 			}
@@ -93,7 +91,7 @@ func (s *cartService) UpdateCartItem(userID, cartItemID uint, quantity uint) (*d
 		return s.RemoveCartItem(userID, cartItemID)
 	}
 
-	if err := s.cartRepo.UpdateItemQuantity(cartItemID, quantity); err != nil {
+	if err := s.uow.CartRepository().UpdateItemQuantity(cartItemID, quantity); err != nil {
 		return nil, err
 	}
 
@@ -105,7 +103,7 @@ func (s *cartService) RemoveCartItem(userID, cartItemID uint) (*dto.CartResponse
 	// Logic การตรวจสอบความเป็นเจ้าของควรจะทำที่นี่
 	// ...
 
-	if err := s.cartRepo.RemoveItem(cartItemID); err != nil {
+	if err := s.uow.CartRepository().RemoveItem(cartItemID); err != nil {
 		return nil, err
 	}
 	return s.GetCart(userID)

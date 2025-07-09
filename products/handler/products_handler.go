@@ -2,11 +2,9 @@
 package handler
 
 import (
-	"backend/domain"
 	"backend/products/dto"
 	"backend/products/service"
 	"encoding/json"
-	"log"
 	"strconv"
 	"strings"
 
@@ -74,11 +72,15 @@ func (h *ProductHandler) HandleCreateProduct(c *fiber.Ctx) error {
 
 func (h *ProductHandler) HandleGetAllProducts(c *fiber.Ctx) error {
 	// 1. สร้าง QueryParams พร้อมตั้งค่า Default
-	params := domain.QueryParams{
-		Page:   c.QueryInt("page", 1),
-		Limit:  c.QueryInt("limit", 20),
-		SortBy: c.Query("sort_by", "created_at"), // ค่าเริ่มต้นเรียงตาม "ล่าสุด"
-		Order:  c.Query("order", "desc"),
+	params := dto.QueryParams{
+		Page:       c.QueryInt("page", 1),
+		Limit:      c.QueryInt("limit", 20),
+		SortBy:     c.Query("sort_by", "created_at"),
+		Order:      c.Query("order", "desc"),
+		Search:     c.Query("search"),
+		CategoryID: uint(c.QueryInt("category_id")),
+		MinPrice:   c.QueryFloat("min_price"),
+		MaxPrice:   c.QueryFloat("max_price"),
 	}
 
 	// 2. Validate ค่าที่รับเข้ามา
@@ -98,13 +100,9 @@ func (h *ProductHandler) HandleGetAllProducts(c *fiber.Ctx) error {
 		params.SortBy = "created_at" // ถ้าไม่ถูกต้องให้กลับไปใช้ค่า Default
 	}
 
-	// 3. เรียกใช้ Service
 	paginatedResult, err := h.productSvc.FindAllProducts(params)
 	if err != nil {
-		log.Printf("Error finding all products: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Could not retrieve products",
-		})
+		return err
 	}
 
 	return c.Status(fiber.StatusOK).JSON(paginatedResult)

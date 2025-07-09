@@ -2,6 +2,7 @@ package repository
 
 import (
 	"backend/domain"
+	"backend/products/dto"
 	"errors"
 	"gorm.io/gorm"
 )
@@ -11,10 +12,10 @@ var ErrNotFound = errors.New("record not found")
 type ProductRepository interface {
 	CreateProduct(product *domain.Product) error
 	CreateImages(images []domain.ProductImage) error
-	CreateCategory(category *domain.Category) error
-	FindAll(params domain.QueryParams) ([]domain.Product, error)
+
 	FindProductByID(id uint) (*domain.Product, error)
-	Count() (int64, error)
+	FindAll(params dto.QueryParams) ([]domain.Product, error)
+	Count(params dto.QueryParams) (int64, error)
 	Delete(id uint) error
 	Update(id uint, updates map[string]interface{}) error
 	// Method สำหรับจัดการ ProductImage
@@ -50,11 +51,6 @@ func (r *productRepository) CreateImages(images []domain.ProductImage) error {
 	return r.db.Create(&images).Error
 }
 
-func (r *productRepository) CreateCategory(category *domain.Category) error {
-	result := r.db.Create(category)
-	return result.Error
-}
-
 func (r *productRepository) FindProductByID(id uint) (*domain.Product, error) {
 	var product domain.Product
 
@@ -67,30 +63,44 @@ func (r *productRepository) FindProductByID(id uint) (*domain.Product, error) {
 	return &product, err
 }
 
-func (r *productRepository) FindAll(params domain.QueryParams) ([]domain.Product, error) {
+func (r *productRepository) FindAll(params dto.QueryParams) ([]domain.Product, error) {
 	var products []domain.Product
-
-	// คำนวณ offset สำหรับการแบ่งหน้า
 	offset := (params.Page - 1) * params.Limit
-
-	// สร้างสตริงสำหรับ Order By
 	orderBy := params.SortBy + " " + params.Order
 
-	// ใช้ .Offset(), .Limit(), และ .Order() ของ GORM
-	err := r.db.
-		Preload("Category").
-		Preload("Images").
-		Offset(offset).
-		Limit(params.Limit).
-		Order(orderBy).
-		Find(&products).Error
+	// เริ่มสร้าง Query
+	query := r.db.Model(&domain.Product{}).Preload("Category").Preload("Images")
 
+	// --- เพิ่ม Logic การ Filter แบบไดนามิก ---
+	if params.Search != "" {
+		query = query.Where("name LIKE ?", "%"+params.Search+"%")
+	}
+	if params.CategoryID != 0 {
+		query = query.Where("category_id = ?", params.CategoryID)
+	}
+	if params.MinPrice > 0 {
+		query = query.Where("price >= ?", params.MinPrice)
+	}
+	if params.MaxPrice > 0 {
+		query = query.Where("price <= ?", params.MaxPrice)
+	}
+
+	// ทำ Pagination และ Sorting ต่อท้าย
+	err := query.Offset(offset).Limit(params.Limit).Order(orderBy).Find(&products).Error
 	return products, err
 }
 
-func (r *productRepository) Count() (int64, error) {
+func (r *productRepository) Count(params dto.QueryParams) (int64, error) {
 	var count int64
-	err := r.db.Model(&domain.Product{}).Count(&count).Error
+	query := r.db.Model(&domain.Product{})
+
+	// --- เพิ่ม Logic การ Filter ให้ตรงกับ FindAll ---
+	if params.Search != "" {
+		query = query.Where("name LIKE ?", "%"+params.Search+"%")
+	}
+	// ... เพิ่มเงื่อนไข filter อื่นๆ ให้ครบ ...
+
+	err := query.Count(&count).Error
 	return count, err
 }
 

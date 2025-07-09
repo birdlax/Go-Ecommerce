@@ -2,19 +2,18 @@ package service
 
 import (
 	"backend/domain"
+	"backend/internal/datastore"
 	"backend/users/dto"
 	"backend/users/repository"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 	"math"
 	"os"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 )
 
 // Custom Error
@@ -42,17 +41,17 @@ type UserService interface {
 }
 
 type userService struct {
-	userRepo repository.UserRepository
+	uow datastore.UnitOfWork
 }
 
-func NewUserService(userRepo repository.UserRepository) UserService {
-	return &userService{userRepo: userRepo}
+func NewUserService(uow datastore.UnitOfWork) UserService {
+	return &userService{uow: uow}
 }
 
 func (s *userService) Register(req dto.RegisterRequest) (*dto.UserResponse, error) {
 	// 1. ตรวจสอบ Email ซ้ำ (เหมือนเดิม)
-	_, err := s.userRepo.FindByEmail(req.Email)
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
+	_, err := s.uow.UserRepository().FindByEmail(req.Email)
+	if !errors.Is(err, repository.ErrNotFound) {
 		// ถ้า err ไม่ใช่ RecordNotFound แสดงว่ามี user แล้ว หรือเกิด error อื่น
 		return nil, ErrEmailExists
 	}
@@ -69,31 +68,24 @@ func (s *userService) Register(req dto.RegisterRequest) (*dto.UserResponse, erro
 		LastName:  req.LastName,
 		Email:     req.Email,
 		Password:  string(hashedPassword),
-		Role:      domain.RoleCustomer, // <-- [สำคัญ] กำหนด Role เริ่มต้นเป็น customer เสมอ
-		IsActive:  true,                // <-- [สำคัญ] ตั้งค่าให้บัญชีพร้อมใช้งานทันที
+		Role:      domain.RoleCustomer,
+		IsActive:  true,
 	}
 
-	// 4. เรียก Repository เพื่อบันทึก User ใหม่ (เหมือนเดิม)
-	if err := s.userRepo.Create(newUser); err != nil {
+	err = s.uow.Execute(func(repos *datastore.Repositories) error {
+		return repos.User.Create(newUser)
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	// 5. แปลง User ที่สร้างเสร็จเป็น DTO เพื่อส่งกลับ (ใช้ DTO ใหม่)
-	response := &dto.UserResponse{
-		ID:        newUser.ID,
-		FirstName: newUser.FirstName,
-		LastName:  newUser.LastName,
-		Email:     newUser.Email,
-		Role:      newUser.Role,
-	}
-
-	return response, nil
+	return mapUserToUserResponse(newUser), nil
 }
 
 func (s *userService) FindUserByID(id uint) (*dto.UserResponse, error) {
-	user, err := s.userRepo.FindByID(id)
+	user, err := s.uow.UserRepository().FindByID(id)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, repository.ErrNotFound) {
 			return nil, ErrUserNotFound // สร้าง ErrUserNotFound คล้ายๆ ErrProductNotFound
 		}
 		return nil, err
@@ -103,13 +95,13 @@ func (s *userService) FindUserByID(id uint) (*dto.UserResponse, error) {
 
 func (s *userService) FindAllUsers(params dto.UserQueryParams) (*dto.PaginatedUsersDTO, error) {
 	// 1. ดึงจำนวนผู้ใช้รวมทั้งหมด
-	totalItems, err := s.userRepo.Count()
+	totalItems, err := s.uow.UserRepository().Count()
 	if err != nil {
 		return nil, err
 	}
 
 	// 2. ดึงข้อมูลผู้ใช้ในหน้าที่ต้องการ
-	users, err := s.userRepo.FindAll(params)
+	users, err := s.uow.UserRepository().FindAll(params)
 	if err != nil {
 		return nil, err
 	}
@@ -136,9 +128,9 @@ func (s *userService) FindAllUsers(params dto.UserQueryParams) (*dto.PaginatedUs
 }
 
 func (s *userService) UpdateUser(id uint, updates map[string]interface{}) (*dto.UserResponse, error) {
-	user, err := s.userRepo.FindByID(id)
+	user, err := s.uow.UserRepository().FindByID(id)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, repository.ErrNotFound) {
 			return nil, ErrUserNotFound
 		}
 		return nil, err
@@ -152,8 +144,8 @@ func (s *userService) UpdateUser(id uint, updates map[string]interface{}) (*dto.
 	}
 	if email, ok := updates["email"].(string); ok {
 		// ตรวจสอบว่า Email ซ้ำหรือไม่
-		existingUser, err := s.userRepo.FindByEmail(email)
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		existingUser, err := s.uow.UserRepository().FindByEmail(email)
+		if err != nil && !errors.Is(err, repository.ErrNotFound) {
 			return nil, err
 		}
 		if existingUser != nil && existingUser.ID != user.ID {
@@ -174,16 +166,16 @@ func (s *userService) UpdateUser(id uint, updates map[string]interface{}) (*dto.
 		user.Role = domain.UserRole(role)
 	}
 
-	if err := s.userRepo.Update(user); err != nil {
+	if err := s.uow.UserRepository().Update(user); err != nil {
 		return nil, err
 	}
 	return mapUserToUserResponse(user), nil
 }
 
 func (s *userService) DeleteUser(id uint) error {
-	err := s.userRepo.Delete(id)
+	err := s.uow.UserRepository().Delete(id)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, repository.ErrNotFound) {
 			return ErrUserNotFound
 		}
 		return err
@@ -204,7 +196,7 @@ func mapUserToUserResponse(user *domain.User) *dto.UserResponse {
 
 func (s *userService) Login(req dto.LoginRequest) (string, string, error) {
 	// 1. ค้นหาผู้ใช้และเปรียบเทียบรหัสผ่าน (เหมือนเดิม)
-	user, err := s.userRepo.FindByEmail(req.Email)
+	user, err := s.uow.UserRepository().FindByEmail(req.Email)
 	if err != nil {
 		return "", "", errors.New("invalid credentials 1")
 	}
@@ -237,7 +229,7 @@ func (s *userService) Login(req dto.LoginRequest) (string, string, error) {
 	// 3.4 บันทึกลง DB
 	user.RefreshToken = &hashedRefreshToken
 	user.RefreshTokenExpiresAt = &refreshTokenExpiresAt
-	if err := s.userRepo.Update(user); err != nil {
+	if err := s.uow.UserRepository().Update(user); err != nil {
 		return "", "", err
 	}
 
@@ -252,7 +244,7 @@ func (s *userService) RefreshToken(tokenString string) (string, error) {
 	hashedToken := hex.EncodeToString(hash.Sum(nil))
 
 	// 2. ค้นหา User จาก Hashed Refresh Token
-	user, err := s.userRepo.FindByRefreshToken(hashedToken)
+	user, err := s.uow.UserRepository().FindByRefreshToken(hashedToken)
 	if err != nil {
 		return "", errors.New("invalid or expired refresh token")
 	}
@@ -274,7 +266,7 @@ func (s *userService) Logout(tokenString string) error {
 	hash.Write([]byte(tokenString))
 	hashedToken := hex.EncodeToString(hash.Sum(nil))
 
-	user, err := s.userRepo.FindByRefreshToken(hashedToken)
+	user, err := s.uow.UserRepository().FindByRefreshToken(hashedToken)
 	if err != nil {
 		return nil // หาไม่เจอก็ไม่เป็นไร
 	}
@@ -282,7 +274,7 @@ func (s *userService) Logout(tokenString string) error {
 	// ล้างค่า Refresh Token ใน DB
 	user.RefreshToken = nil
 	user.RefreshTokenExpiresAt = nil
-	return s.userRepo.Update(user)
+	return s.uow.UserRepository().Update(user)
 }
 
 func createAccessToken(user *domain.User) (string, error) {
@@ -290,7 +282,7 @@ func createAccessToken(user *domain.User) (string, error) {
 		"user_id": user.ID,
 		"email":   user.Email,
 		"role":    user.Role,
-		"exp":     time.Now().Add(time.Hour * 1).Unix(), // อายุ 15 นาที
+		"exp":     time.Now().Add(time.Hour * 1).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(os.Getenv("JWT_SECRET")))
@@ -311,23 +303,23 @@ func (s *userService) AddAddress(userID uint, req dto.AddressRequest) (*domain.A
 
 	// [Logic สำคัญ] ถ้าตั้งที่อยู่นี้เป็น Default ต้องไปเคลียร์ Default เก่าก่อน
 	if newAddress.IsDefault {
-		if err := s.userRepo.ClearDefaultAddress(userID); err != nil {
+		if err := s.uow.AddressRepository().ClearDefault(userID); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := s.userRepo.CreateAddress(newAddress); err != nil {
+	if err := s.uow.AddressRepository().Create(newAddress); err != nil {
 		return nil, err
 	}
 	return newAddress, nil
 }
 
 func (s *userService) GetUserAddresses(userID uint) ([]domain.Address, error) {
-	return s.userRepo.FindAddressesByUserID(userID)
+	return s.uow.AddressRepository().FindByUserID(userID)
 }
 
 func (s *userService) UpdateAddress(userID, addressID uint, req dto.AddressRequest) (*domain.Address, error) {
-	address, err := s.userRepo.FindAddressByID(addressID)
+	address, err := s.uow.AddressRepository().FindByID(addressID)
 	if err != nil {
 		return nil, errors.New("address not found")
 	}
@@ -343,19 +335,19 @@ func (s *userService) UpdateAddress(userID, addressID uint, req dto.AddressReque
 	address.IsDefault = req.IsDefault
 
 	if address.IsDefault {
-		if err := s.userRepo.ClearDefaultAddress(userID); err != nil {
+		if err := s.uow.AddressRepository().ClearDefault(userID); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := s.userRepo.UpdateAddress(address); err != nil {
+	if err := s.uow.AddressRepository().Update(address); err != nil {
 		return nil, err
 	}
 	return address, nil
 }
 
 func (s *userService) DeleteAddress(userID, addressID uint) error {
-	address, err := s.userRepo.FindAddressByID(addressID)
+	address, err := s.uow.AddressRepository().FindByID(addressID)
 	if err != nil {
 		return errors.New("address not found")
 	}
@@ -364,5 +356,5 @@ func (s *userService) DeleteAddress(userID, addressID uint) error {
 		return errors.New("you do not own this address")
 	}
 
-	return s.userRepo.DeleteAddress(addressID)
+	return s.uow.AddressRepository().Delete(addressID)
 }

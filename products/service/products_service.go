@@ -1,20 +1,18 @@
 package service
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
-	"math"
-	"path/filepath"
-
-	"github.com/google/uuid"
-	// [สำคัญ] แก้ไข "my-ecommerce-app" เป็นชื่อ Module ใน go.mod ของคุณ
 	"backend/domain"
 	"backend/internal/datastore"
 	"backend/products/dto"
 	"backend/products/repository"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/google/uuid"
+	"log"
+	"math"
+	"path/filepath"
 )
 
 var ErrProductNotFound = errors.New("product not found")
@@ -24,7 +22,7 @@ var ErrProductNotFound = errors.New("product not found")
 // ===================================================================
 type ProductService interface {
 	CreateProductWithImages(ctx context.Context, req dto.CreateProductRequest) (*dto.ProductResponse, error)
-	FindAllProducts(params domain.QueryParams) (*dto.PaginatedProductsDTO, error)
+	FindAllProducts(params dto.QueryParams) (*dto.PaginatedProductsDTO, error)
 	FindProductByID(id uint) (*dto.ProductResponse, error)
 	DeleteProduct(id uint) error
 	UpdateProduct(id uint, updates map[string]interface{}) (*dto.ProductResponse, error)
@@ -133,10 +131,10 @@ func (s *productService) FindProductByID(id uint) (*dto.ProductResponse, error) 
 	return mapProductToProductResponse(product, s.imageBaseURL), nil
 }
 
-func (s *productService) FindAllProducts(params domain.QueryParams) (*dto.PaginatedProductsDTO, error) {
+func (s *productService) FindAllProducts(params dto.QueryParams) (*dto.PaginatedProductsDTO, error) {
 	var paginatedResponse *dto.PaginatedProductsDTO
 	err := s.uow.Execute(func(repos *datastore.Repositories) error {
-		totalItems, err := repos.Product.Count()
+		totalItems, err := repos.Product.Count(params)
 		if err != nil {
 			return err
 		}
@@ -288,13 +286,4 @@ func mapProductToProductResponse(product *domain.Product, imageBaseURL string) *
 		CreatedAt: product.CreatedAt,
 		UpdatedAt: product.UpdatedAt,
 	}
-}
-
-// getKeysFromMap ใช้สำหรับ CreateProductWithImages
-func getKeysFromMap(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
 }

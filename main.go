@@ -2,13 +2,15 @@ package main
 
 import (
 	// "backend/carts"
+	"backend/carts"
+	"backend/categories"
 	"backend/config"
 	"backend/domain"
 	"backend/internal/datastore"
 	"backend/middleware"
-	// "backend/orders"
+	"backend/orders"
 	"backend/products"
-	// "backend/users"
+	"backend/users"
 	"github.com/gofiber/fiber/v2"
 
 	"log"
@@ -44,12 +46,11 @@ func main() {
 
 	api := app.Group("/api/v1")
 
-	// --- [แก้ไข] 5. ลงทะเบียน Module โดยส่ง uow และ cfg เข้าไป ---
-	// เราส่ง cfg ทั้งก้อนเข้าไป เพื่อให้แต่ละ Module เลือกใช้ค่า Config ที่ตัวเองต้องการได้
 	products.RegisterModule(api, uow, cfg)
-	// users.RegisterModule(api, uow, cfg) // แก้ไข User Module ให้รับ cfg ด้วย
-	// carts.RegisterModule(api, uow, cfg)
-	// orders.RegisterModule(api, uow) // Order อาจจะไม่ต้องการ config เพิ่มเติม
+	categories.RegisterModule(api, uow, cfg)
+	users.RegisterModule(api, uow, cfg)
+	carts.RegisterModule(api, uow, cfg)
+	orders.RegisterModule(api, uow, cfg)
 
 	log.Println("Server started on :8080")
 	app.Listen(":8080")

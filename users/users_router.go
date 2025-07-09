@@ -1,22 +1,21 @@
-// package products // แนะนำให้เปลี่ยนชื่อ package เป็น 'products' เพื่อให้ตรงกับ Domain
 package users
 
 import (
+	"backend/config"
+	"backend/internal/datastore"
 	"backend/middleware"
 	"backend/users/handler"
-	"backend/users/repository"
 	"backend/users/service"
+
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
 	"log"
 )
 
-func RegisterModule(api fiber.Router, db *gorm.DB) {
+func RegisterModule(api fiber.Router, uow datastore.UnitOfWork, cfg *config.Config) {
 	// --- 1. ประกอบร่าง (Wiring) Dependencies ---
 	// สร้างทุกอย่างจากชั้นในสุด (Repository) ออกมาข้างนอก (Handler)
 
-	userRepo := repository.NewUserRepository(db)
-	userSvc := service.NewUserService(userRepo)
+	userSvc := service.NewUserService(uow)
 	userHdl := handler.NewUserHandler(userSvc)
 
 	// == กลุ่มสำหรับ Auth (Public) ==
@@ -44,7 +43,7 @@ func RegisterModule(api fiber.Router, db *gorm.DB) {
 	// การใช้ .Group("") จะไม่สร้าง path เพิ่ม แต่จะให้ router instance ใหม่มาจัดการ
 	adminAPI := usersAPI.Group("")
 	// 2. ติดตั้ง Middleware ให้กับ Group นี้ครั้งเดียว
-	// adminAPI.Use(middleware.Protected(), middleware.AdminRequired())
+	adminAPI.Use(middleware.Protected(), middleware.AdminRequired())
 
 	adminAPI.Get("/", userHdl.HandleGetAllUsers)
 	adminAPI.Get("/:id", userHdl.HandleGetUserByID)

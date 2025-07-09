@@ -24,7 +24,10 @@ type Order struct {
 	OrderItems        []OrderItem `gorm:"foreignKey:OrderID"`
 	TotalPrice        float64     `gorm:"not null"`
 	ShippingAddressID uint        `gorm:"not null"` // ID ของที่อยู่ที่จะจัดส่ง
+	ShippingAddress   Address     `gorm:"foreignKey:ShippingAddressID"`
+	PaymentMethod     *string     `gorm:"type:varchar(50)"`
 	Status            OrderStatus `gorm:"type:varchar(20);not null;default:'pending'"`
+	TrackingNumber    *string     `gorm:"type:varchar(50);default:null"` // หมายเลขติดตามพัสดุ
 }
 
 // OrderItem คือสินค้าแต่ละรายการในคำสั่งซื้อ

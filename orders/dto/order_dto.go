@@ -26,5 +26,29 @@ type OrderResponse struct {
 	Status            domain.OrderStatus  `json:"status"`
 	ShippingAddressID uint                `json:"shipping_address_id"`
 	CreatedAt         time.Time           `json:"created_at"`
+	ShippingAddress   *AddressResponse    `json:"shipping_address,omitempty"`
+	PaymentMethod     *string             `json:"payment_method,omitempty"`
 	Items             []OrderItemResponse `json:"items"`
+}
+
+type PaymentWebhookRequest struct {
+	OrderID       uint   `json:"order_id" validate:"required"`
+	Status        string `json:"status" validate:"required,oneof=success failed"`
+	PaymentMethod string `json:"payment_method" validate:"required,oneof=credit_card bank_transfer"`
+}
+
+type ShipOrderRequest struct {
+	OrderID        uint   `json:"order_id" validate:"required"`
+	TrackingNumber string `json:"tracking_number" validate:"required"`
+}
+
+type AddressResponse struct {
+	ID           uint   `json:"id"`
+	AddressLine1 string `json:"address_line_1"`
+	City         string `json:"city"`
+	PostalCode   string `json:"postal_code"`
+	Country      string `json:"country"`
+	State        string `json:"state"`
+	AddressLine2 string `json:"address_line_2,omitempty"` // ใช้ omitempty
+	IsDefault    bool   `json:"is_default"`
 }
